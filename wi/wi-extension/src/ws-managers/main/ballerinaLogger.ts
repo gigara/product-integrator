@@ -21,6 +21,7 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import { workspace } from 'vscode';
+import { getActiveBallerinaExtension } from '../../utils/ballerinaExtension';
 
 interface BallerinaPluginConfig extends vscode.WorkspaceConfiguration {
     home?: string;
@@ -28,41 +29,93 @@ interface BallerinaPluginConfig extends vscode.WorkspaceConfiguration {
     classpath?: string;
 }
 
-export const outputChannel = vscode.window.createOutputChannel("Ballerina");
 const logLevelDebug: boolean = getPluginConfig().get('debugLog') === true;
 
-function withNewLine(value: string) {
-    if (typeof value === 'string' && !value.endsWith('\n')) {
-        return value += '\n';
+let cachedOutputChannel: vscode.OutputChannel | undefined;
+let pendingChannelPromise: Promise<vscode.OutputChannel | undefined> | undefined;
+
+async function getSharedOutputChannel(): Promise<vscode.OutputChannel | undefined> {
+    if (cachedOutputChannel) {
+        return cachedOutputChannel;
     }
-    return value;
+    if (pendingChannelPromise) {
+        return pendingChannelPromise;
+    }
+    pendingChannelPromise = (async () => {
+        try {
+            const ballerinaExt = await getActiveBallerinaExtension();
+            cachedOutputChannel = ballerinaExt.exports.getOutPutChannel();
+            return cachedOutputChannel;
+        } catch {
+            return undefined;
+        } finally {
+            pendingChannelPromise = undefined;
+        }
+    })();
+    return pendingChannelPromise;
 }
 
-export function getPluginConfig(): BallerinaPluginConfig {
+function getPluginConfig(): BallerinaPluginConfig {
     return workspace.getConfiguration('ballerina');
 }
 
-// This function will log the value to the Ballerina output channel only if debug log is enabled
+function formatLogMessage(level: string, message: string): string {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const hours = String(now.getHours()).padStart(2, '0');
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    const seconds = String(now.getSeconds()).padStart(2, '0');
+    const millis = String(now.getMilliseconds()).padStart(3, '0');
+    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${millis} [${level}] ${message}\n`;
+}
+
+export function info(message: string): void {
+    console.log(message);
+    getSharedOutputChannel().then(channel => {
+        channel?.append(formatLogMessage('info', message));
+    });
+    persistDebugLogs(message);
+}
+
+export function warn(message: string): void {
+    console.warn(message);
+    getSharedOutputChannel().then(channel => {
+        channel?.append(formatLogMessage('warn', message));
+    });
+    persistDebugLogs(message);
+}
+
+export function error(message: string): void {
+    console.error(message);
+    getSharedOutputChannel().then(channel => {
+        channel?.append(formatLogMessage('error', message));
+    });
+    persistDebugLogs(message);
+}
+
 export function debug(value: string): void {
-    const output = withNewLine(value);
-    console.log(output);
+    console.log(value);
     if (logLevelDebug) {
-        outputChannel.append(output);
+        getSharedOutputChannel().then(channel => {
+            channel?.append(formatLogMessage('debug', value));
+        });
     }
     persistDebugLogs(value);
 }
 
-// This function will log the value to the Ballerina output channel
 export function log(value: string): void {
-    const output = withNewLine(value);
-    console.log(output);
-    outputChannel.append(output);
+    console.log(value);
+    getSharedOutputChannel().then(channel => {
+        channel?.append(formatLogMessage('info', value));
+    });
     persistDebugLogs(value);
 }
 
 export function getOutputChannel() {
     if (logLevelDebug) {
-        return outputChannel;
+        return getSharedOutputChannel();
     }
 }
 
@@ -78,12 +131,10 @@ function persistDebugLogs(value: string): void {
         const logFolder = path.join(homeDir, '.ballerina', 'vscode-extension-logs');
         const date = new Date().toLocaleString();
         const logLine = `${date} ${value}`;
-        const output = withNewLine(logLine);
-        // Create destination folder if it doesn't exist
+        const output = typeof logLine === 'string' && !logLine.endsWith('\n') ? logLine + '\n' : logLine;
         if (!fs.existsSync(logFolder)) {
             fs.mkdirSync(logFolder, { recursive: true });
         }
-        // Create log file if it doesn't exist
         const logFileDate = new Date().toISOString().split('T')[0];
         const fileName = `${logFileDate}.log`;
         if (!fs.existsSync(path.join(logFolder, fileName))) {
@@ -92,14 +143,12 @@ function persistDebugLogs(value: string): void {
         const logFilePath = path.join(logFolder, fileName);
         fs.appendFileSync(logFilePath, output);
 
-        // Remove the oldest log file if there are more than 10 log files
         const logFiles = fs.readdirSync(logFolder);
         if (logFiles.length > 10) {
             const sortedFiles = logFiles.sort();
             fs.unlinkSync(path.join(logFolder, sortedFiles[0]));
         }
     } catch (error) {
-        // Silently fail to avoid disrupting the extension, but log to console
         console.error('Failed to persist debug logs:', error);
     }
 }
