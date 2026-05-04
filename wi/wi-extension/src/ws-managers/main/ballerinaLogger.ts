@@ -46,7 +46,8 @@ async function getSharedOutputChannel(): Promise<vscode.OutputChannel | undefine
             const ballerinaExt = await getActiveBallerinaExtension();
             cachedOutputChannel = ballerinaExt.exports.getOutPutChannel();
             return cachedOutputChannel;
-        } catch {
+        } catch (err) {
+            console.error('Failed to acquire shared Ballerina output channel', err);
             return undefined;
         } finally {
             pendingChannelPromise = undefined;
@@ -76,7 +77,7 @@ export function info(message: string): void {
     getSharedOutputChannel().then(channel => {
         channel?.append(formatLogMessage('info', message));
     });
-    persistDebugLogs(message);
+    persistDebugLogs(`[info] ${message}`);
 }
 
 export function warn(message: string): void {
@@ -84,7 +85,7 @@ export function warn(message: string): void {
     getSharedOutputChannel().then(channel => {
         channel?.append(formatLogMessage('warn', message));
     });
-    persistDebugLogs(message);
+    persistDebugLogs(`[warn] ${message}`);
 }
 
 export function error(message: string): void {
@@ -92,7 +93,7 @@ export function error(message: string): void {
     getSharedOutputChannel().then(channel => {
         channel?.append(formatLogMessage('error', message));
     });
-    persistDebugLogs(message);
+    persistDebugLogs(`[error] ${message}`);
 }
 
 export function debug(value: string): void {
@@ -102,7 +103,7 @@ export function debug(value: string): void {
             channel?.append(formatLogMessage('debug', value));
         });
     }
-    persistDebugLogs(value);
+    persistDebugLogs(`[debug] ${value}`);
 }
 
 export function log(value: string): void {
@@ -110,7 +111,7 @@ export function log(value: string): void {
     getSharedOutputChannel().then(channel => {
         channel?.append(formatLogMessage('info', value));
     });
-    persistDebugLogs(value);
+    persistDebugLogs(`[info] ${value}`);
 }
 
 export function getOutputChannel() {
