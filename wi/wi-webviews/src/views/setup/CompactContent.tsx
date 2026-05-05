@@ -110,11 +110,7 @@ const CompactErrorSection = styled.div`
     background: color-mix(in srgb, var(--vscode-errorForeground) 6%, transparent);
 `;
 
-export interface SetupContentProps {
-    onBack?: () => void;
-}
-
-export function SetupContent({ onBack: _onBack }: SetupContentProps) {
+export function SetupContent() {
     const { wsClient } = useVisualizerContext();
     const { progress, setProgress, isStarting, setIsStarting, isSetupRunning, handleRestart } = useSetupProgress();
 

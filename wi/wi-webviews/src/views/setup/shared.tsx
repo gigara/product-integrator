@@ -107,7 +107,9 @@ export function getStepTitle(progress: DownloadProgress | null, stepIndex: numbe
     if (!progress) return baseTitle;
     const currentStep = progress.step ?? 0;
     if (!progress.success && currentStep === stepIndex && progress.percentage && progress.totalSize) {
-        return `${baseTitle} (${progress.percentage}% - ${progress.totalSize.toFixed(0)}MB)`;
+        const sizeKB = progress.totalSize / 1024;
+        const sizeLabel = sizeKB < 1024 ? `${Math.floor(sizeKB)} KB` : `${Math.floor(sizeKB / 1024)} MB`;
+        return `${baseTitle} (${progress.percentage}% - ${sizeLabel})`;
     }
     return baseTitle;
 }

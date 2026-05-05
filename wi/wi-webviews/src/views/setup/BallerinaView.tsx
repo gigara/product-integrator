@@ -101,7 +101,7 @@ export function SetupBallerinaView() {
         try {
             await wsClient.runCommand({ command: "ballerina.setup-ballerina" });
         } catch {
-            // Errors surface via onDownloadProgress with step === -1
+            setProgress({ step: -1, success: false, message: "Failed to start the setup process. Please try again." });
         } finally {
             setIsStarting(false);
         }

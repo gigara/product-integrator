@@ -118,7 +118,7 @@ export function registerCommands(
 		}),
 	);
 
-	// Update Ballerina command — opens the WI webview with the setup progress UI
+	// Setup Ballerina command — opens the WI webview with the setup progress UI
 	context.subscriptions.push(
 		vscode.commands.registerCommand(COMMANDS.SETUP_BALLERINA, () => {
 			try {
