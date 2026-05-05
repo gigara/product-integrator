@@ -188,7 +188,7 @@ const stateMachine = createMachine<MachineContext>({
     on: {
         UPDATE_VIEW: {
             actions: assign({
-                currentView: (context, event: any) => {
+                currentView: (_context, event: any) => {
                     ext.log(`View updated in context: ${event.view}`);
                     return event.view;
                 }

@@ -16,11 +16,9 @@
  * under the License.
  */
 
-import { useEffect, useState } from "react";
 import styled from "@emotion/styled";
-import { Button, Codicon, Icon, ProgressRing } from "@wso2/ui-toolkit";
+import { Button, Codicon } from "@wso2/ui-toolkit";
 import { useVisualizerContext } from "../../contexts";
-import { DownloadProgress } from "@wso2/wi-core";
 import {
     PageBackdrop,
     PageContainer,
@@ -33,43 +31,17 @@ import {
     FormBody,
     FormContent,
 } from "../shared/FormPageLayout";
-
-const StepRow = styled.div`
-    display: flex;
-    align-items: flex-start;
-    gap: 12px;
-`;
-
-const StepIconWrap = styled.div`
-    margin-top: 2px;
-    flex-shrink: 0;
-    width: 18px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-`;
-
-const StepContent = styled.div`
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-`;
-
-interface StepTitleProps {
-    error?: boolean;
-}
-
-const StepTitle = styled.span<StepTitleProps>`
-    font-size: 13px;
-    font-weight: 500;
-    color: ${(p: StepTitleProps) => p.error ? "var(--vscode-errorForeground)" : "var(--vscode-foreground)"};
-`;
-
-const StepDesc = styled.span`
-    font-size: 12px;
-    color: var(--vscode-descriptionForeground);
-    line-height: 1.5;
-`;
+import {
+    STEPS,
+    StepRow,
+    StepIconWrap,
+    StepContent,
+    StepTitle,
+    StepDesc,
+    useSetupProgress,
+    getStepIcon,
+    getStepTitle,
+} from "./shared";
 
 const WarningIconWrap = styled.div`
     flex-shrink: 0;
@@ -119,22 +91,9 @@ const ActionArea = styled.div`
     padding-top: 4px;
 `;
 
-const STEPS = [
-    { title: "Prepare Installation", description: "Checking versions and preparing environment for installation." },
-    { title: "Install Ballerina Tool", description: "Downloading and installing the Ballerina tool package." },
-    { title: "Install Ballerina Distribution", description: "Downloading and installing the Ballerina distribution package." },
-    { title: "Install Java Runtime", description: "Downloading and installing the required Java Runtime Environment." },
-    { title: "Complete Setup", description: "Configuring VS Code, setting permissions and finalizing installation." },
-];
-
 export function SetupBallerinaView() {
     const { wsClient } = useVisualizerContext();
-    const [progress, setProgress] = useState<DownloadProgress | null>(null);
-    const [isStarting, setIsStarting] = useState(false);
-
-    useEffect(() => {
-        return wsClient.onDownloadProgress((p: DownloadProgress) => setProgress(p));
-    }, [wsClient]);
+    const { progress, setProgress, isStarting, setIsStarting, isSetupRunning, handleRestart } = useSetupProgress();
 
     const handleUpdate = async () => {
         setIsStarting(true);
@@ -147,37 +106,6 @@ export function SetupBallerinaView() {
             setIsStarting(false);
         }
     };
-
-    const handleRestart = () => {
-        wsClient.runCommand({ command: "workbench.action.reloadWindow" });
-    };
-
-    const getStepIcon = (stepIndex: number) => {
-        if (!progress) {
-            return <Icon name="radio-button-unchecked" iconSx={{ fontSize: "16px", cursor: "default" }} />;
-        }
-        const currentStep = progress.step ?? 0;
-        const isComplete = progress.success || currentStep > stepIndex;
-        const isActive = !progress.success && currentStep === stepIndex;
-        if (isComplete) {
-            return <Icon name="enable-inverse" iconSx={{ fontSize: "15px", color: "var(--vscode-textLink-foreground)", cursor: "default" }} />;
-        }
-        if (isActive) {
-            return <ProgressRing sx={{ height: "16px", width: "16px" }} />;
-        }
-        return <Icon name="radio-button-unchecked" iconSx={{ fontSize: "16px", cursor: "default" }} />;
-    };
-
-    const getStepTitle = (stepIndex: number, baseTitle: string) => {
-        if (!progress) return baseTitle;
-        const currentStep = progress.step ?? 0;
-        if (!progress.success && currentStep === stepIndex && progress.percentage && progress.totalSize) {
-            return `${baseTitle} (${progress.percentage}% - ${progress.totalSize.toFixed(0)}MB)`;
-        }
-        return baseTitle;
-    };
-
-    const isSetupRunning = progress !== null && !progress.success && (progress.step ?? 0) !== -1;
 
     return (
         <PageBackdrop>
@@ -212,9 +140,9 @@ export function SetupBallerinaView() {
                                     <StepContainer>
                                         {STEPS.map((step, idx) => (
                                             <StepRow key={idx}>
-                                                <StepIconWrap>{getStepIcon(idx + 1)}</StepIconWrap>
+                                                <StepIconWrap>{getStepIcon(progress, idx + 1)}</StepIconWrap>
                                                 <StepContent>
-                                                    <StepTitle>{getStepTitle(idx + 1, step.title)}</StepTitle>
+                                                    <StepTitle>{getStepTitle(progress, idx + 1, step.title)}</StepTitle>
                                                     <StepDesc>{step.description}</StepDesc>
                                                 </StepContent>
                                             </StepRow>

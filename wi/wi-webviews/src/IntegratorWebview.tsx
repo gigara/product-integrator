@@ -22,7 +22,7 @@ import { CreationView } from "./views/creationView";
 import { ImportIntegration } from "./views/ImportIntegration";
 import { SamplesView } from "./views/samplesView";
 import { ComponentFormView } from "./views/componentFormView";
-import { SetupBallerinaView } from "./views/setupBallerinaView";
+import { SetupBallerinaView } from "./views/setup/BallerinaView";
 import { useVisualizerContext } from "./contexts";
 import { ProgressIndicator } from "@wso2/ui-toolkit";
 
