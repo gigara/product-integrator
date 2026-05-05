@@ -226,6 +226,16 @@ const stateMachine = createMachine<MachineContext>({
                 onError: {
                     target: 'disabled'
                 }
+            },
+            on: {
+                UPDATE_VIEW: {
+                    actions: assign({
+                        currentView: (context, event: any) => {
+                            ext.log(`View updated in context: ${event.view}`);
+                            return event.view;
+                        }
+                    })
+                }
             }
         },
         ready: {
