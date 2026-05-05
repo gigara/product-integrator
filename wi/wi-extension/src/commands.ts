@@ -133,7 +133,7 @@ export function registerCommands(
 	// Receives download-progress events forwarded by the Ballerina extension's
 	// notifyDownloadProgress via command execution (works even when ext.isActive=false).
 	context.subscriptions.push(
-		vscode.commands.registerCommand("wso2.integrator.onDownloadProgress", (progress: DownloadProgress) => {
+		vscode.commands.registerCommand(COMMANDS.ON_DOWNLOAD_PROGRESS, (progress: DownloadProgress) => {
 			BridgeLayer.notifyDownloadProgress("global", progress);
 		}),
 	);

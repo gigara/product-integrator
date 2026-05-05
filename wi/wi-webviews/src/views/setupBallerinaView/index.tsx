@@ -200,15 +200,13 @@ export function SetupBallerinaView() {
                     <FormBody>
                         <FormContent>
                             <ActionArea>
-                                <div>
-                                    <Button
-                                        appearance="primary"
-                                        onClick={handleUpdate}
-                                        disabled={isStarting || isSetupRunning}
-                                    >
-                                        {isStarting ? "Starting…" : "Set Up Ballerina"}
-                                    </Button>
-                                </div>
+                                <Button
+                                    appearance="primary"
+                                    onClick={handleUpdate}
+                                    disabled={isStarting || isSetupRunning}
+                                >
+                                    {isStarting ? "Starting…" : "Set Up Ballerina"}
+                                </Button>
 
                                 {progress && (progress.step ?? 0) !== -1 && (
                                     <StepContainer>

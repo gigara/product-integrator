@@ -185,6 +185,16 @@ const stateMachine = createMachine<MachineContext>({
     id: 'wi',
     initial: 'initialize',
     predictableActionArguments: true,
+    on: {
+        UPDATE_VIEW: {
+            actions: assign({
+                currentView: (context, event: any) => {
+                    ext.log(`View updated in context: ${event.view}`);
+                    return event.view;
+                }
+            })
+        }
+    },
     context: {
         projectUri: 'global',
         projectType: ProjectType.NONE,
@@ -226,46 +236,16 @@ const stateMachine = createMachine<MachineContext>({
                 onError: {
                     target: 'disabled'
                 }
-            },
-            on: {
-                UPDATE_VIEW: {
-                    actions: assign({
-                        currentView: (context, event: any) => {
-                            ext.log(`View updated in context: ${event.view}`);
-                            return event.view;
-                        }
-                    })
-                }
             }
         },
         ready: {
             entry: ["activateBasedOnProjectType", "registerConfigChangeListener"],
             exit: "disposeConfigChangeListener",
-            on: {
-                UPDATE_VIEW: {
-                    actions: assign({
-                        currentView: (context, event: any) => {
-                            ext.log(`View updated in context: ${event.view}`);
-                            return event.view;
-                        }
-                    })
-                }
-            }
         },
         disabled: {
             // Project type could not be detected or no known project
             entry: ["registerConfigChangeListener"],
             exit: "disposeConfigChangeListener",
-            on: {
-                UPDATE_VIEW: {
-                    actions: assign({
-                        currentView: (context, event: any) => {
-                            ext.log(`View updated in context: ${event.view}`);
-                            return event.view;
-                        }
-                    })
-                }
-            }
         },
     }
 }, {

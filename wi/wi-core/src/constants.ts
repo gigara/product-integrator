@@ -39,6 +39,7 @@ export const COMMANDS = {
 	IMPORT_PROJECT: "wso2.integrator.importProject",
 	CLOSE_WEBVIEW: "wso2.integrator.closeWebview",
 	SETUP_BALLERINA: "wso2.integrator.setupBallerinaVisually",
+	ON_DOWNLOAD_PROGRESS: "wso2.integrator.onDownloadProgress",
 };
 
 /**
