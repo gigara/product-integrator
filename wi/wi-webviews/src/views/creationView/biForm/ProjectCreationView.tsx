@@ -17,6 +17,7 @@
  */
 
 import { useState, useEffect, useRef, useMemo } from "react";
+import debounce from 'lodash/debounce';
 import { Button, Icon, TextField } from "@wso2/ui-toolkit";
 import { useVisualizerContext } from "../../../contexts";
 import { useCloudContext, useCloudProjects } from "../../../providers";
@@ -78,12 +79,23 @@ export function ProjectCreationView({ onBack, ballerinaUnavailable }: { onBack?:
     const [isAdvancedExpanded, setIsAdvancedExpanded] = useState(false);
     const [projectHandle, setProjectHandle] = useState(() => sanitizeProjectHandle(DEFAULT_PROJECT_NAME));
     const [defaultPath, setDefaultPath] = useState("");
+    const [pathTouched, setPathTouched] = useState(false);
+    const [editablePath, setEditablePath] = useState("");
     const [formData, setFormData] = useState({
         projectName: DEFAULT_PROJECT_NAME,
         path: "",
         orgName: "",
         version: "",
     });
+
+    const debouncedSetProjectNameError = useMemo(
+        () => debounce((error: string) => setProjectNameError(error), 300),
+        []
+    );
+    const debouncedSetPathError = useMemo(
+        () => debounce((error: string) => setPathError(error), 300),
+        []
+    );
 
     const resolvedOrg = useMemo(() => {
         if (!organizations || organizations.length === 0) return undefined;
@@ -169,6 +181,24 @@ export function ProjectCreationView({ onBack, ballerinaUnavailable }: { onBack?:
         setProjectHandle(derived);
     }, [formData.projectName]);
 
+    // Real-time project name validation — clear immediately when valid, debounce errors
+    // to avoid flashing "required" on every keystroke before the user finishes typing.
+    useEffect(() => {
+        const error = validateProjectName(formData.projectName);
+        if (!error) {
+            debouncedSetProjectNameError.cancel();
+            setProjectNameError(null);
+            return;
+        }
+        debouncedSetProjectNameError(error);
+        return () => debouncedSetProjectNameError.cancel();
+    }, [formData.projectName]);
+
+    // Real-time org name validation (mirrors LibraryCreationView behaviour)
+    useEffect(() => {
+        setOrgNameError(validateOrgName(formData.orgName));
+    }, [formData.orgName]);
+
     // Validate handle
     useEffect(() => {
         setProjectHandleError(validateProjectHandle(projectHandle));
@@ -203,13 +233,36 @@ export function ProjectCreationView({ onBack, ballerinaUnavailable }: { onBack?:
         }
     }, [cloudProjectsData, formData.projectName, resolvedOrg]);
 
-    const resolvedPath = joinPath(formData.path || defaultPath, projectHandle);
+    // Keep editablePath in sync with the committed path when the user is not actively editing
+    useEffect(() => {
+        if (!pathTouched) {
+            setEditablePath(formData.path || defaultPath);
+        }
+    }, [formData.path, defaultPath, pathTouched]);
+
+    // Real-time path validation
+    useEffect(() => {
+        if (!pathTouched) {
+            debouncedSetPathError.cancel();
+            setPathError(null);
+            return;
+        }
+        if (!editablePath || editablePath.trim().length < 2) {
+            debouncedSetPathError("Please select a path for your project");
+            return () => debouncedSetPathError.cancel();
+        }
+        debouncedSetPathError.cancel();
+        setPathError(null);
+    }, [editablePath, pathTouched]);
+
+    const resolvedPath = editablePath ? joinPath(editablePath, projectHandle) : "";
 
     const handlePathSelection = async () => {
         try {
-            const result = await wsClient.selectFileOrDirPath({ startPath: formData.path || defaultPath });
+            const result = await wsClient.selectFileOrDirPath({ startPath: editablePath || formData.path || defaultPath });
             if (!result.path) return;
-            if (pathError) setPathError(null);
+            setPathTouched(false);
+            setEditablePath(result.path);
             setFormData(prev => ({ ...prev, path: result.path }));
         } catch (error) {
             console.error("Failed to select path:", error);
@@ -219,9 +272,12 @@ export function ProjectCreationView({ onBack, ballerinaUnavailable }: { onBack?:
 
     const handleCreate = async () => {
         setIsValidating(true);
-        setProjectNameError(null);
-        setPathError(null);
-        setProjectHandleError(null);
+
+        // Commit any un-blurred path before submitting
+        const currentPath = editablePath || formData.path;
+        if (pathTouched && editablePath !== formData.path) {
+            setFormData(prev => ({ ...prev, path: editablePath }));
+        }
 
         let hasError = false;
 
@@ -238,7 +294,7 @@ export function ProjectCreationView({ onBack, ballerinaUnavailable }: { onBack?:
             hasError = true;
         }
 
-        if (formData.path.length < 2) {
+        if (!currentPath || currentPath.trim().length < 2) {
             setPathError("Please select a path for your project");
             hasError = true;
         }
@@ -265,7 +321,7 @@ export function ProjectCreationView({ onBack, ballerinaUnavailable }: { onBack?:
 
         try {
             const validationResult = await wsClient.validateProjectPath({
-                projectPath: formData.path,
+                projectPath: currentPath,
                 projectName: projectHandle,
                 createDirectory: true,
                 createAsWorkspace: true,
@@ -287,7 +343,7 @@ export function ProjectCreationView({ onBack, ballerinaUnavailable }: { onBack?:
 
             await wsClient.createBIProject({
                 workspaceName: formData.projectName,
-                projectPath: formData.path,
+                projectPath: currentPath,
                 createDirectory: true,
                 createAsWorkspace: true,
                 orgName: formData.orgName || undefined,
@@ -331,7 +387,6 @@ export function ProjectCreationView({ onBack, ballerinaUnavailable }: { onBack?:
                                     ref={firstFieldRef}
                                     onTextChange={(value) => {
                                         projectNameTouchedRef.current = true;
-                                        if (projectNameError) setProjectNameError(null);
                                         setFormData(prev => ({ ...prev, projectName: value }));
                                     }}
                                     value={formData.projectName}
@@ -359,16 +414,21 @@ export function ProjectCreationView({ onBack, ballerinaUnavailable }: { onBack?:
                                     id="project-folder-selector"
                                     label="Select Path"
                                     placeholder="Browse to select a folder..."
-                                    selectedPath={formData.path || defaultPath}
+                                    selectedPath={editablePath}
                                     required={true}
                                     onSelect={handlePathSelection}
                                     onChange={(value) => {
-                                        if (pathError) setPathError(null);
-                                        setFormData(prev => ({ ...prev, path: value }));
+                                        setPathTouched(true);
+                                        setEditablePath(value);
+                                    }}
+                                    onBlur={() => {
+                                        if (pathTouched && editablePath !== formData.path) {
+                                            setFormData(prev => ({ ...prev, path: editablePath }));
+                                        }
                                     }}
                                     errorMsg={pathError || undefined}
                                 />
-                                {resolvedPath && resolvedPath !== (formData.path || defaultPath) && (
+                                {resolvedPath && resolvedPath !== editablePath && (
                                     <ResolvedPathText>Will be created at: {resolvedPath}</ResolvedPathText>
                                 )}
                             </FieldGroup>
@@ -388,7 +448,6 @@ export function ProjectCreationView({ onBack, ballerinaUnavailable }: { onBack?:
                                         description="The organization that owns this project."
                                         isSigningIn={isSigningIn}
                                         onOrgChange={(value) => {
-                                            if (orgNameError) setOrgNameError(null);
                                             setFormData(prev => ({ ...prev, orgName: value }));
                                         }}
                                         onSignIn={handleSignIn}
@@ -413,7 +472,7 @@ export function ProjectCreationView({ onBack, ballerinaUnavailable }: { onBack?:
                             <FormFooter>
                                 <span title={ballerinaUnavailable ? "Ballerina distribution is not set up. Use Configure to set it up." : undefined}>
                                     <Button
-                                        disabled={isValidating || ballerinaUnavailable}
+                                        disabled={isValidating || ballerinaUnavailable || !!projectNameError || !!cloudProjectNameError || !!cloudProjectHandleError || !!orgNameError || !!projectHandleError || !!pathError}
                                         onClick={handleCreate}
                                         appearance="primary"
                                     >

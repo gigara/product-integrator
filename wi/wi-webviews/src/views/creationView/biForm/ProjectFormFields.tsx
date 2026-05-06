@@ -17,6 +17,7 @@
  */
 
 import { useEffect, useState, useRef, useMemo } from "react";
+import debounce from 'lodash/debounce';
 import { TextField, CheckBox } from "@wso2/ui-toolkit";
 import { DirectorySelector } from "../../../components/DirectorySelector/DirectorySelector";
 import { useVisualizerContext } from "../../../contexts/WsContext";
@@ -35,7 +36,7 @@ import {
 } from "./styles";
 import { AdvancedConfigurationSection } from "./components";
 import { Organization } from "./components/AdvancedConfigurationSection";
-import { sanitizePackageName, validatePackageName, validateOrgName, joinPath, sanitizeProjectHandle, validateProjectHandle, suggestAvailableProjectName } from "./utils";
+import { sanitizePackageName, validatePackageName, validateOrgName, joinPath, sanitizeProjectHandle, validateProjectHandle, suggestAvailableProjectName, validateComponentName, validateProjectName } from "./utils";
 import { WICommandIds } from "@wso2/wso2-platform-core";
 import { DEFAULT_PROJECT_NAME, ProjectFormData } from "./types";
 
@@ -56,6 +57,7 @@ export interface ProjectFormFieldsProps {
     organizations?: Organization[];
     onCloudProjectNameError?: (error: string | null) => void;
     onCloudProjectHandleError?: (error: string | null) => void;
+    onHasErrors?: (hasErrors: boolean) => void;
 }
 
 export function ProjectFormFields({
@@ -71,6 +73,7 @@ export function ProjectFormFields({
     organizations,
     onCloudProjectNameError,
     onCloudProjectHandleError,
+    onHasErrors,
 }: ProjectFormFieldsProps) {
     const { wsClient } = useVisualizerContext();
     const { authState } = useCloudContext();
@@ -80,6 +83,9 @@ export function ProjectFormFields({
     const [withinProjectNameTouched, setWithinProjectNameTouched] = useState(false);
     const withinProjectNameTouchedRef = useRef(false);
     const [packageNameError, setPackageNameError] = useState<string | null>(null);
+    const [integrationNameValidationError, setIntegrationNameValidationError] = useState<string | null>(null);
+    const [withinProjectNameValidationError, setWithinProjectNameValidationError] = useState<string | null>(null);
+    const [pathValidationError, setPathValidationError] = useState<string | null>(null);
     const [orgNameError, setOrgNameError] = useState<string | null>(null);
     const [handleError, setHandleError] = useState<string | null>(null);
     const [cloudProjectNameError, setCloudProjectNameError] = useState<string | null>(null);
@@ -108,8 +114,21 @@ export function ProjectFormFields({
         resolvedOrg?.handle
     );
 
+    const debouncedSetIntegrationNameError = useMemo(
+        () => debounce((error: string) => setIntegrationNameValidationError(error), 300),
+        []
+    );
+    const debouncedSetWithinProjectNameError = useMemo(
+        () => debounce((error: string) => setWithinProjectNameValidationError(error), 300),
+        []
+    );
+    const debouncedSetPathValidationError = useMemo(
+        () => debounce((error: string) => setPathValidationError(error), 300),
+        []
+    );
+
     const computeDisplayedPath = (): string => {
-        const base = editablePath || formData.path || defaultPath;
+        const base = editablePath;
         if (formData.createWithinProject) {
             const projectPath = formData.projectHandle
                 ? joinPath(base, formData.projectHandle)
@@ -223,6 +242,50 @@ export function ProjectFormFields({
         setPackageNameError(error);
     }, [formData.packageName, formData.integrationName]);
 
+    // Real-time integration name validation
+    useEffect(() => {
+        const error = validateComponentName(formData.integrationName);
+        if (!error) {
+            debouncedSetIntegrationNameError.cancel();
+            setIntegrationNameValidationError(null);
+            return;
+        }
+        debouncedSetIntegrationNameError(error);
+        return () => debouncedSetIntegrationNameError.cancel();
+    }, [formData.integrationName]);
+
+    // Real-time project name validation
+    useEffect(() => {
+        if (!formData.createWithinProject) {
+            debouncedSetWithinProjectNameError.cancel();
+            setWithinProjectNameValidationError(null);
+            return;
+        }
+        const error = validateProjectName(formData.withinProjectName?.trim() ?? "");
+        if (!error) {
+            debouncedSetWithinProjectNameError.cancel();
+            setWithinProjectNameValidationError(null);
+            return;
+        }
+        debouncedSetWithinProjectNameError(error);
+        return () => debouncedSetWithinProjectNameError.cancel();
+    }, [formData.withinProjectName, formData.createWithinProject]);
+
+    // Real-time path validation — only activate once the user has touched the field
+    useEffect(() => {
+        if (!pathTouched) {
+            debouncedSetPathValidationError.cancel();
+            setPathValidationError(null);
+            return;
+        }
+        if (!editablePath || editablePath.trim().length < 2) {
+            debouncedSetPathValidationError("Please select a path");
+            return () => debouncedSetPathValidationError.cancel();
+        }
+        debouncedSetPathValidationError.cancel();
+        setPathValidationError(null);
+    }, [editablePath, pathTouched]);
+
     useEffect(() => {
         if (expandAdvancedTrigger) {
             setIsPackageInfoExpanded(true);
@@ -322,6 +385,21 @@ export function ProjectFormFields({
         onCloudProjectHandleError?.(cloudProjectHandleError);
     }, [cloudProjectHandleError]);
 
+    // Propagate aggregated error state to the parent so it can disable its submit button.
+    useEffect(() => {
+        const hasAnyError = !!(
+            integrationNameValidationError ||
+            withinProjectNameValidationError ||
+            pathValidationError ||
+            packageNameError ||
+            orgNameError ||
+            handleError ||
+            cloudProjectNameError ||
+            cloudProjectHandleError
+        );
+        onHasErrors?.(hasAnyError);
+    }, [integrationNameValidationError, withinProjectNameValidationError, pathValidationError, packageNameError, orgNameError, handleError, cloudProjectNameError, cloudProjectHandleError]);
+
     // Focus and select the first field on mount — VSCodeTextField is a web component,
     // so the real <input> is inside its shadow DOM and needs to be targeted directly.
     useEffect(() => {
@@ -343,7 +421,7 @@ export function ProjectFormFields({
                     label={`Integration Name`}
                     placeholder={`Enter an integration name`}
                     required={true}
-                    errorMsg={integrationNameError || ""}
+                    errorMsg={integrationNameError || integrationNameValidationError || ""}
                 />
             </FieldGroup>
 
@@ -363,7 +441,7 @@ export function ProjectFormFields({
                             label="Project Name"
                             placeholder="Enter project name"
                             required={true}
-                            errorMsg={projectNameError ?? (cloudProjectNameError ?? "")}
+                            errorMsg={projectNameError ?? (withinProjectNameValidationError ?? (cloudProjectNameError ?? ""))}
                         />
                         {cloudProjectNameError && (
                             <CloudErrorActionRow>
@@ -410,7 +488,7 @@ export function ProjectFormFields({
                             onFormDataChange({ path: editablePath });
                         }
                     }}
-                    errorMsg={pathError || undefined}
+                    errorMsg={pathError || pathValidationError || undefined}
                 />
                 {resolvedPath && resolvedPath !== editablePath && (
                     <ResolvedPathText>Will be created at: {resolvedPath}</ResolvedPathText>
