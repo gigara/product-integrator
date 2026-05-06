@@ -39,6 +39,7 @@ import { Organization } from "./components/AdvancedConfigurationSection";
 import { sanitizePackageName, validatePackageName, validateOrgName, joinPath, sanitizeProjectHandle, validateProjectHandle, suggestAvailableProjectName, validateComponentName, validateProjectName } from "./utils";
 import { WICommandIds } from "@wso2/wso2-platform-core";
 import { DEFAULT_PROJECT_NAME, ProjectFormData } from "./types";
+import { useRealtimeProjectPathValidation } from "./useRealtimeProjectPathValidation";
 
 // Re-export for backwards compatibility
 export type { ProjectFormData } from "./types";
@@ -120,10 +121,6 @@ export function ProjectFormFields({
     );
     const debouncedSetWithinProjectNameError = useMemo(
         () => debounce((error: string) => setWithinProjectNameValidationError(error), 300),
-        []
-    );
-    const debouncedSetPathValidationError = useMemo(
-        () => debounce((error: string) => setPathValidationError(error), 300),
         []
     );
 
@@ -271,20 +268,16 @@ export function ProjectFormFields({
         return () => debouncedSetWithinProjectNameError.cancel();
     }, [formData.withinProjectName, formData.createWithinProject]);
 
-    // Real-time path validation — only activate once the user has touched the field
-    useEffect(() => {
-        if (!pathTouched) {
-            debouncedSetPathValidationError.cancel();
-            setPathValidationError(null);
-            return;
-        }
-        if (!editablePath || editablePath.trim().length < 2) {
-            debouncedSetPathValidationError("Please select a path");
-            return () => debouncedSetPathValidationError.cancel();
-        }
-        debouncedSetPathValidationError.cancel();
-        setPathValidationError(null);
-    }, [editablePath, pathTouched]);
+    useRealtimeProjectPathValidation({
+        wsClient,
+        projectPath: editablePath,
+        projectName: formData.createWithinProject ? formData.projectHandle : formData.packageName,
+        createAsWorkspace: formData.createWithinProject,
+        pathTouched,
+        requiredPathMessage: "Please select a path",
+        invalidPathMessage: "Invalid integration path",
+        onPathErrorChange: setPathValidationError,
+    });
 
     useEffect(() => {
         if (expandAdvancedTrigger) {

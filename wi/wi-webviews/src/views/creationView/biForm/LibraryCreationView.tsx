@@ -54,6 +54,7 @@ import {
     FormFooter,
 } from "../../shared/FormPageLayout";
 import { DEFAULT_LIBRARY_NAME, DEFAULT_PACKAGE_NAME, DEFAULT_PROJECT_NAME } from "./types";
+import { useRealtimeProjectPathValidation } from "./useRealtimeProjectPathValidation";
 
 const FieldGroup = styled.div`
     margin-bottom: 20px;
@@ -110,10 +111,6 @@ export function LibraryCreationView({ onBack, ballerinaUnavailable }: { onBack?:
     );
     const debouncedSetWithinProjectNameError = useMemo(
         () => debounce((error: string) => setWithinProjectNameError(error), 300),
-        []
-    );
-    const debouncedSetPathError = useMemo(
-        () => debounce((error: string) => setPathError(error), 300),
         []
     );
 
@@ -288,20 +285,16 @@ export function LibraryCreationView({ onBack, ballerinaUnavailable }: { onBack?:
         }
     }, [formData.path, defaultPath, pathTouched]);
 
-    // Real-time path validation
-    useEffect(() => {
-        if (!pathTouched) {
-            debouncedSetPathError.cancel();
-            setPathError(null);
-            return;
-        }
-        if (!editablePath || editablePath.trim().length < 2) {
-            debouncedSetPathError("Please select a path for your library");
-            return () => debouncedSetPathError.cancel();
-        }
-        debouncedSetPathError.cancel();
-        setPathError(null);
-    }, [editablePath, pathTouched]);
+    useRealtimeProjectPathValidation({
+        wsClient,
+        projectPath: editablePath,
+        projectName: createWithinProject ? withinProjectHandle : formData.packageName,
+        createAsWorkspace: createWithinProject,
+        pathTouched,
+        requiredPathMessage: "Please select a path for your library",
+        invalidPathMessage: "Invalid library path",
+        onPathErrorChange: setPathError,
+    });
 
     const computeDisplayedPath = (): string => {
         const base = editablePath;

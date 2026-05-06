@@ -35,6 +35,7 @@ import {
 import { WICommandIds } from "@wso2/wso2-platform-core";
 import { CollapsibleSection, OrgField, Organization } from "./components";
 import { ValidateProjectFormErrorField } from "@wso2/wi-core";
+import { useRealtimeProjectPathValidation } from "./useRealtimeProjectPathValidation";
 import {
     PageBackdrop,
     PageContainer,
@@ -90,10 +91,6 @@ export function ProjectCreationView({ onBack, ballerinaUnavailable }: { onBack?:
 
     const debouncedSetProjectNameError = useMemo(
         () => debounce((error: string) => setProjectNameError(error), 300),
-        []
-    );
-    const debouncedSetPathError = useMemo(
-        () => debounce((error: string) => setPathError(error), 300),
         []
     );
 
@@ -240,20 +237,16 @@ export function ProjectCreationView({ onBack, ballerinaUnavailable }: { onBack?:
         }
     }, [formData.path, defaultPath, pathTouched]);
 
-    // Real-time path validation
-    useEffect(() => {
-        if (!pathTouched) {
-            debouncedSetPathError.cancel();
-            setPathError(null);
-            return;
-        }
-        if (!editablePath || editablePath.trim().length < 2) {
-            debouncedSetPathError("Please select a path for your project");
-            return () => debouncedSetPathError.cancel();
-        }
-        debouncedSetPathError.cancel();
-        setPathError(null);
-    }, [editablePath, pathTouched]);
+    useRealtimeProjectPathValidation({
+        wsClient,
+        projectPath: editablePath,
+        projectName: projectHandle,
+        createAsWorkspace: true,
+        pathTouched,
+        requiredPathMessage: "Please select a path for your project",
+        invalidPathMessage: "Invalid project path",
+        onPathErrorChange: setPathError,
+    });
 
     const resolvedPath = editablePath ? joinPath(editablePath, projectHandle) : "";
 
