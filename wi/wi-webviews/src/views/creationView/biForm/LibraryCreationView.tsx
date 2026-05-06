@@ -189,7 +189,6 @@ export function LibraryCreationView({ onBack, ballerinaUnavailable }: { onBack?:
         }
     }, [withinProjectName, createWithinProject]);
 
-    // Validate handle
     useEffect(() => {
         if (createWithinProject) {
             setProjectHandleError(validateProjectHandle(withinProjectHandle));

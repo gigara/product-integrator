@@ -385,10 +385,8 @@ export function validateProjectPath(projectPath: string, projectName: string, cr
             return { isValid: false, errorMessage: 'Project name is required', errorField: ValidateProjectFormErrorField.NAME };
         }
 
-        // Determine the final project path
         const finalPath = createDirectory ? path.join(projectPath, sanitizeName(projectName)) : projectPath;
 
-        // If not creating a new directory, check if the target directory already has a Ballerina project
         if (!createDirectory) {
             if (!fs.existsSync(projectPath)) {
                 return { isValid: false, errorMessage: 'Directory does not exist. Please select an existing directory.', errorField: ValidateProjectFormErrorField.PATH };
@@ -398,7 +396,6 @@ export function validateProjectPath(projectPath: string, projectName: string, cr
                 return { isValid: false, errorMessage: 'Existing Ballerina project detected in the selected directory', errorField: ValidateProjectFormErrorField.PATH };
             }
         } else {
-            // If creating a new directory, check if it already exists.
             // non-existing projectPath is fine — all intermediate directories will be created at project-creation time.
             if (fs.existsSync(finalPath)) {
                 return { isValid: false, errorMessage: `A directory with this name already exists at the selected location`, errorField: ValidateProjectFormErrorField.NAME};
@@ -412,7 +409,6 @@ export function validateProjectPath(projectPath: string, projectName: string, cr
         while (!fs.existsSync(writableAncestor)) {
             const parent = path.dirname(writableAncestor);
             if (parent === writableAncestor) {
-                // Reached the filesystem root without finding an existing directory
                 return { isValid: false, errorMessage: 'Directory path does not exist', errorField: ValidateProjectFormErrorField.PATH };
             }
             writableAncestor = parent;
