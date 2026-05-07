@@ -29,6 +29,9 @@ export interface BallerinaExtMigrationAPI {
     onChatNotify: Event<WIChatNotify>;
     isAIAuthenticated: () => boolean;
     signInForAI: () => Promise<{ success: boolean; error?: string }>;
+    signInWithAnthropicKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
+    signInWithAwsBedrock: (creds: { accessKeyId: string; secretAccessKey: string; region: string; sessionToken?: string }) => Promise<{ success: boolean; error?: string }>;
+    signInWithVertexAI: (creds: { projectId: string; location: string; clientEmail: string; privateKey: string }) => Promise<{ success: boolean; error?: string }>;
 }
 
 /**
@@ -40,6 +43,7 @@ export class BallerinaContext {
     public isNPSupported: boolean = false;
     public isWorkspaceSupported: boolean = false;
     public migration: BallerinaExtMigrationAPI | undefined;
+    public langClient: any | undefined;
     public onDownloadProgress: Event<DownloadProgress> | undefined;
     private _initialized: boolean = false;
 
@@ -58,6 +62,7 @@ export class BallerinaContext {
             this.biSupported = instance.biSupported ?? false;
             this.isNPSupported = instance.isNPSupported ?? false;
             this.isWorkspaceSupported = instance.isWorkspaceSupported ?? false;
+            this.langClient = instance.langClient;
         }
         if (ballerinaExtExports?.migration) {
             this.migration = ballerinaExtExports.migration as BallerinaExtMigrationAPI;

@@ -228,7 +228,6 @@ export class MainWsManager implements WIVisualizerAPI {
             } else {
                 const selectedDir = await askProjectPath(params.startPath);
                 if (!selectedDir || selectedDir.length === 0) {
-                    window.showErrorMessage('A folder must be selected');
                     resolve({ path: "" });
                 } else {
                     const dirPath = selectedDir[0].fsPath;
@@ -347,6 +346,7 @@ export class MainWsManager implements WIVisualizerAPI {
 
                 if (result) {
                     openInVSCode((result as CreateMiProjectResponse).filePath);
+                    resolve(result as CreateMiProjectResponse);
                 } else {
                     resolve({ filePath: '' });
                 }
@@ -678,6 +678,33 @@ export class MainWsManager implements WIVisualizerAPI {
         const result = await (migrationAPI?.signInForAI() ?? Promise.resolve({ success: false, error: "Migration API not available." }));
         console.log('[ws-manager] triggerAICopilotSignIn: result:', JSON.stringify(result));
         return result;
+    }
+
+    async triggerAnthropicKeySignIn(params: { apiKey: string }): Promise<{ success: boolean; error?: string }> {
+        try {
+            const migrationAPI = await ballerinaContext.ensureMigrationAPI();
+            return await (migrationAPI?.signInWithAnthropicKey(params.apiKey) ?? Promise.resolve({ success: false, error: "Migration API not available." }));
+        } catch (e) {
+            return { success: false, error: e instanceof Error ? e.message : "Authentication failed. Please try again." };
+        }
+    }
+
+    async triggerAwsBedrockSignIn(params: { accessKeyId: string; secretAccessKey: string; region: string; sessionToken?: string }): Promise<{ success: boolean; error?: string }> {
+        try {
+            const migrationAPI = await ballerinaContext.ensureMigrationAPI();
+            return await (migrationAPI?.signInWithAwsBedrock(params) ?? Promise.resolve({ success: false, error: "Migration API not available." }));
+        } catch (e) {
+            return { success: false, error: e instanceof Error ? e.message : "Authentication failed. Please try again." };
+        }
+    }
+
+    async triggerVertexAiSignIn(params: { projectId: string; location: string; clientEmail: string; privateKey: string }): Promise<{ success: boolean; error?: string }> {
+        try {
+            const migrationAPI = await ballerinaContext.ensureMigrationAPI();
+            return await (migrationAPI?.signInWithVertexAI(params) ?? Promise.resolve({ success: false, error: "Migration API not available." }));
+        } catch (e) {
+            return { success: false, error: e instanceof Error ? e.message : "Authentication failed. Please try again." };
+        }
     }
 
     /**

@@ -20,6 +20,8 @@ import { ExtensionContext, TreeView, commands, window, workspace, extensions } f
 import { ProjectExplorerEntry, ProjectExplorerEntryProvider } from './project-explorer-provider';
 import { SHARED_COMMANDS, BI_COMMANDS, MACHINE_VIEW, NodePosition } from '../types';
 import { ballerinaContext } from '../ballerinaContext';
+import { COMMANDS, ViewType } from '@wso2/wi-core';
+import { StateMachine } from '../../stateMachine';
 
 const WI_PROJECT_EXPLORER_VIEW_ID = 'wso2-integrator.explorer';
 
@@ -160,10 +162,18 @@ function isDebugSessionActive(): boolean {
 }
 
 function handleNonBallerinaVisibility(): void {
-    if (!ballerinaContext.biSupported) {
-        commands.executeCommand('setContext', 'BI.status', 'updateNeed');
+    if (ballerinaContext.langClient) {
+        if (!ballerinaContext.biSupported) {
+            commands.executeCommand('setContext', 'BI.status', 'updateNeed');
+        } else {
+            commands.executeCommand('setContext', 'BI.status', 'unknownProject');
+        }
     } else {
-        commands.executeCommand('setContext', 'BI.status', 'unknownProject');
+        commands.executeCommand('setContext', 'BI.status', 'noLS');
     }
-    commands.executeCommand(SHARED_COMMANDS.OPEN_BI_WELCOME);
+    // Don't override intentional views (e.g. the update view opened by "Update Now").
+    const currentView = StateMachine.getContext().currentView;
+    if (currentView !== ViewType.SETUP_BALLERINA) {
+        commands.executeCommand(COMMANDS.OPEN_WELCOME);
+    }
 }
