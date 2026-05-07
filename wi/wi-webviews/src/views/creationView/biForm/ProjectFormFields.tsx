@@ -381,17 +381,36 @@ export function ProjectFormFields({
     // Propagate aggregated error state to the parent so it can disable its submit button.
     useEffect(() => {
         const hasAnyError = !!(
+            integrationNameError ||
             integrationNameValidationError ||
             withinProjectNameValidationError ||
+            pathError ||
             pathValidationError ||
+            projectNameError ||
+            packageNameValidationError ||
             packageNameError ||
+            projectHandleError ||
             orgNameError ||
             handleError ||
             cloudProjectNameError ||
             cloudProjectHandleError
         );
         onHasErrors?.(hasAnyError);
-    }, [integrationNameValidationError, withinProjectNameValidationError, pathValidationError, packageNameError, orgNameError, handleError, cloudProjectNameError, cloudProjectHandleError]);
+    }, [
+        integrationNameError,
+        integrationNameValidationError,
+        withinProjectNameValidationError,
+        pathError,
+        pathValidationError,
+        projectNameError,
+        packageNameValidationError,
+        packageNameError,
+        projectHandleError,
+        orgNameError,
+        handleError,
+        cloudProjectNameError,
+        cloudProjectHandleError
+    ]);
 
     // Focus and select the first field on mount — VSCodeTextField is a web component,
     // so the real <input> is inside its shadow DOM and needs to be targeted directly.
