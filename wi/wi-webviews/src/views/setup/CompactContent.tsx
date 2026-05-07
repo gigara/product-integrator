@@ -178,9 +178,9 @@ export function SetupContent() {
             {progress?.success && (
                 <CompactSuccessSection>
                     <StepTitle>Setup complete</StepTitle>
-                    <StepDesc>Restart VS Code to finish applying the changes.</StepDesc>
+                    <StepDesc>Restart the editor to finish applying the changes.</StepDesc>
                     <div style={{ marginTop: "4px" }}>
-                        <Button appearance="primary" onClick={handleRestart}>Restart VS Code</Button>
+                        <Button appearance="primary" onClick={handleRestart}>Restart Editor</Button>
                     </div>
                 </CompactSuccessSection>
             )}

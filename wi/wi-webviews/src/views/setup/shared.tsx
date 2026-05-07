@@ -39,7 +39,7 @@ export const STEPS = [
     { title: "Install Ballerina Tool", description: "Downloading and installing the Ballerina tool package." },
     { title: "Install Ballerina Distribution", description: "Downloading and installing the Ballerina distribution package." },
     { title: "Install Java Runtime", description: "Downloading and installing the required Java Runtime Environment." },
-    { title: "Complete Setup", description: "Configuring VS Code, setting permissions and finalizing installation." },
+    { title: "Complete Setup", description: "Setting permissions and finalizing installation." },
 ];
 
 // ---------------------------------------------------------------------------
