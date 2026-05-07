@@ -391,6 +391,13 @@ export function validateProjectPath(projectPath: string, projectName: string, cr
             if (!fs.existsSync(projectPath)) {
                 return { isValid: false, errorMessage: 'Directory does not exist. Please select an existing directory.', errorField: ValidateProjectFormErrorField.PATH };
             }
+            if (!fs.statSync(projectPath).isDirectory()) {
+                return {
+                    isValid: false,
+                    errorMessage: 'The selected path is a file, not a directory. Please select a directory.',
+                    errorField: ValidateProjectFormErrorField.PATH
+                };
+            }
             const ballerinaTomlPath = path.join(finalPath, 'Ballerina.toml');
             if (fs.existsSync(ballerinaTomlPath)) {
                 return { isValid: false, errorMessage: 'Existing Ballerina project detected in the selected directory', errorField: ValidateProjectFormErrorField.PATH };
@@ -398,7 +405,14 @@ export function validateProjectPath(projectPath: string, projectName: string, cr
         } else {
             // non-existing projectPath is fine — all intermediate directories will be created at project-creation time.
             if (fs.existsSync(finalPath)) {
-                return { isValid: false, errorMessage: `A directory with this name already exists at the selected location`, errorField: ValidateProjectFormErrorField.NAME};
+                const isDir = fs.statSync(finalPath).isDirectory();
+                return {
+                    isValid: false,
+                    errorMessage: isDir
+                        ? `A directory with this name already exists at the selected location`
+                        : `A file with this name already exists at the selected location`,
+                    errorField: ValidateProjectFormErrorField.NAME
+                };
             }
         }
 
@@ -416,6 +430,14 @@ export function validateProjectPath(projectPath: string, projectName: string, cr
                 };
             }
             writableAncestor = parent;
+        }
+
+        if (!fs.statSync(writableAncestor).isDirectory()) {
+            return {
+                isValid: false,
+                errorMessage: 'The path contains a file where a directory is expected.',
+                errorField: ValidateProjectFormErrorField.PATH
+            };
         }
 
         try {
