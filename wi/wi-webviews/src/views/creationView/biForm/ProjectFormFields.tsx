@@ -17,7 +17,7 @@
  */
 
 import { useEffect, useState, useRef, useMemo } from "react";
-import debounce from 'lodash/debounce';
+import debounce from "lodash/debounce";
 import { TextField, CheckBox } from "@wso2/ui-toolkit";
 import { DirectorySelector } from "../../../components/DirectorySelector/DirectorySelector";
 import { useVisualizerContext } from "../../../contexts/WsContext";

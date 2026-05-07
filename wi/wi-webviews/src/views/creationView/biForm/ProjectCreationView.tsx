@@ -17,7 +17,7 @@
  */
 
 import { useState, useEffect, useRef, useMemo } from "react";
-import debounce from 'lodash/debounce';
+import debounce from "lodash/debounce";
 import { Button, Icon, TextField } from "@wso2/ui-toolkit";
 import { useVisualizerContext } from "../../../contexts";
 import { useCloudContext, useCloudProjects } from "../../../providers";
