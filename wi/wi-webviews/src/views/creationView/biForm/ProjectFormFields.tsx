@@ -475,11 +475,7 @@ export function ProjectFormFields({
                     onChange={(value) => {
                         setPathTouched(true);
                         setEditablePath(value);
-                    }}
-                    onBlur={() => {
-                        if (pathTouched && editablePath !== formData.path) {
-                            onFormDataChange({ path: editablePath });
-                        }
+                        onFormDataChange({ path: value });
                     }}
                     errorMsg={pathError || pathValidationError || undefined}
                 />
