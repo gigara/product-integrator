@@ -409,7 +409,11 @@ export function validateProjectPath(projectPath: string, projectName: string, cr
         while (!fs.existsSync(writableAncestor)) {
             const parent = path.dirname(writableAncestor);
             if (parent === writableAncestor) {
-                return { isValid: false, errorMessage: 'Directory path does not exist', errorField: ValidateProjectFormErrorField.PATH };
+                return {
+                    isValid: false,
+                    errorMessage: 'Directory does not exist. Please select an existing directory.',
+                    errorField: ValidateProjectFormErrorField.PATH
+                };
             }
             writableAncestor = parent;
         }
