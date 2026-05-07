@@ -15,3 +15,4 @@ disableWorkspaceTrust.diff
 disableThirdPartyExtNotifications.diff
 injectEnvs.diff
 integratorMenus.diff
+removeXmlLanguageAssociation.diff
