@@ -149,14 +149,18 @@ jobs:
   build-macos:
     if: ${{ github.event.inputs.build_macos == 'true' }}
     name: Build (macOS)
-    runs-on: macos-latest
+    runs-on: ${{ matrix.runner }}
     needs: [resolve-versions, compile]
     defaults:
       run:
         working-directory: lib/vscode
     strategy:
       matrix:
-        arch: [arm64, x64]
+        include:
+          - arch: arm64
+            runner: macos-latest
+          - arch: x64
+            runner: macos-13
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -277,7 +281,6 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           source "$HOME/.cargo/env"
-          # Add ARM64 target for cross-compilation
           if [ "${{ matrix.arch }}" = "arm64" ]; then
             rustup target add aarch64-apple-darwin
           else
