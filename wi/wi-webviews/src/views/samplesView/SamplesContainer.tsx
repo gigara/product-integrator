@@ -873,7 +873,17 @@ export function SamplesContainer(props: SamplesContainerProps) {
 						{filteredItems.map((item) => (
 							<SampleCard key={item.id} className="sample-card">
 								<CardHeader>
-									<Tooltip content={item.title}>
+									<Tooltip
+										content={item.title}
+										position="bottom"
+										offset={{ top: 16, left: 20 }}
+										sx={{
+											maxWidth: "280px",
+											whiteSpace: "normal",
+											wordWrap: "break-word",
+											overflowWrap: "break-word",
+										}}
+									>
 										<CardTitle>{item.title}</CardTitle>
 									</Tooltip>
 									<CategoryLabel>{item.componentType}</CategoryLabel>
