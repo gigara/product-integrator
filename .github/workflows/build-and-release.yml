@@ -160,7 +160,10 @@ jobs:
           - arch: arm64
             runner: macos-latest
           - arch: x64
-            runner: macos-13
+            # macos-15-intel is the last available Intel (x86_64) GitHub-hosted runner.
+            # It will be retired in August 2027 — revisit the x64 build strategy before then.
+            #http://github.com/actions/runner-images/issues/13045
+            runner: macos-15-intel
     steps:
       - name: Checkout
         uses: actions/checkout@v4
