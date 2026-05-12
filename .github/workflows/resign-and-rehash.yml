@@ -4,8 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Release tag to re-sign (e.g. v5.0.0-alpha12)'
+        description: 'Release tag to re-sign (e.g. v5.0.0-beta, v5.0.0, or v5.0.0-rc1)'
         required: true
+        type: string
+      artifact_version:
+        description: 'Artifact version when it differs from the tag (e.g. enter 5.0.0 when tag is v5.0.0-rc1 but artifacts are named 5.0.0). Leave blank to derive from tag.'
+        required: false
         type: string
       resign_dmg:
         description: 'Re-sign macOS DMG installers'
@@ -28,6 +32,17 @@ jobs:
     if: ${{ inputs.resign_dmg == true }}
     runs-on: macos-latest
     steps:
+      - name: Resolve artifact version
+        id: version
+        run: |
+          if [ -n "${{ inputs.artifact_version }}" ]; then
+            ARTIFACT_VERSION="${{ inputs.artifact_version }}"
+          else
+            ARTIFACT_VERSION="${{ inputs.release_tag }}"
+            ARTIFACT_VERSION="${ARTIFACT_VERSION#v}"
+          fi
+          echo "artifact_version=${ARTIFACT_VERSION}" >> $GITHUB_OUTPUT
+
       - name: Install cosign
         uses: sigstore/cosign-installer@59acb6260d9c0ba8f4a2f9d9b48431a222b68e20 # v3.5.0
 
@@ -38,7 +53,7 @@ jobs:
           mkdir -p release-files
           gh release download "${{ inputs.release_tag }}" \
             --repo wso2/product-integrator \
-            --pattern "*.dmg" \
+            --pattern "*${{ steps.version.outputs.artifact_version }}*.dmg" \
             --dir release-files/
           echo "Downloaded files:"
           ls -lh release-files/
@@ -86,6 +101,18 @@ jobs:
     if: ${{ inputs.resign_msi == true }}
     runs-on: windows-latest
     steps:
+      - name: Resolve artifact version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.artifact_version }}" ]; then
+            ARTIFACT_VERSION="${{ inputs.artifact_version }}"
+          else
+            ARTIFACT_VERSION="${{ inputs.release_tag }}"
+            ARTIFACT_VERSION="${ARTIFACT_VERSION#v}"
+          fi
+          echo "artifact_version=${ARTIFACT_VERSION}" >> $GITHUB_OUTPUT
+
       - name: Install cosign
         uses: sigstore/cosign-installer@59acb6260d9c0ba8f4a2f9d9b48431a222b68e20 # v3.5.0
 
@@ -96,7 +123,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path release-files | Out-Null
           gh release download "${{ inputs.release_tag }}" `
             --repo wso2/product-integrator `
-            --pattern "*.msi" `
+            --pattern "*${{ steps.version.outputs.artifact_version }}*.msi" `
             --dir release-files/
           Write-Host "Downloaded files:"
           Get-ChildItem release-files/ | Format-Table Name, Length
