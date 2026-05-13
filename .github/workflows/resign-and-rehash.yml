@@ -52,7 +52,7 @@ jobs:
         run: |
           mkdir -p release-files
           gh release download "${{ inputs.release_tag }}" \
-            --repo wso2/product-integrator \
+            --repo wso2-enterprise/support-product-integrator \
             --pattern "*${{ steps.version.outputs.artifact_version }}*.dmg" \
             --dir release-files/
           echo "Downloaded files:"
@@ -79,7 +79,7 @@ jobs:
             cosign verify-blob "$dmg" \
               --certificate "${base}.dmg.pem" \
               --signature "${base}.dmg.sig" \
-              --certificate-identity="https://github.com/wso2/product-integrator/.github/workflows/resign-and-rehash.yml@${{ github.ref }}" \
+              --certificate-identity="https://github.com/wso2-enterprise/support-product-integrator/.github/workflows/resign-and-rehash.yml@${{ github.ref }}" \
               --certificate-oidc-issuer=https://token.actions.githubusercontent.com
           done
 
@@ -91,7 +91,7 @@ jobs:
             release-files/*.pem \
             release-files/*.sig \
             release-files/*.sha256 \
-            --repo wso2/product-integrator \
+            --repo wso2-enterprise/support-product-integrator \
             --clobber
           echo "Uploaded:"
           ls -lh release-files/*.pem release-files/*.sig release-files/*.sha256
@@ -122,7 +122,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path release-files | Out-Null
           gh release download "${{ inputs.release_tag }}" `
-            --repo wso2/product-integrator `
+            --repo wso2-enterprise/support-product-integrator `
             --pattern "*${{ steps.version.outputs.artifact_version }}*.msi" `
             --dir release-files/
           Write-Host "Downloaded files:"
@@ -151,7 +151,7 @@ jobs:
             cosign verify-blob "$msi" \
               --certificate "${base}.msi.pem" \
               --signature "${base}.msi.sig" \
-              --certificate-identity="https://github.com/wso2/product-integrator/.github/workflows/resign-and-rehash.yml@${{ github.ref }}" \
+              --certificate-identity="https://github.com/wso2-enterprise/support-product-integrator/.github/workflows/resign-and-rehash.yml@${{ github.ref }}" \
               --certificate-oidc-issuer=https://token.actions.githubusercontent.com
           done
 
@@ -164,7 +164,7 @@ jobs:
             release-files/*.pem \
             release-files/*.sig \
             release-files/*.sha256 \
-            --repo wso2/product-integrator \
+            --repo wso2-enterprise/support-product-integrator \
             --clobber
           echo "Uploaded:"
           ls -lh release-files/*.pem release-files/*.sig release-files/*.sha256
