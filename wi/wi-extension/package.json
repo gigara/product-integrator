@@ -140,7 +140,7 @@
       },
       {
         "view": "wso2-integrator.explorer",
-        "contents": "No integrations or libraries found in this project.\n\nGet started by adding your first integration or library.\n\n[$(add) Create Integration or Library](command:BI.project-explorer.add)",
+        "contents": "No integrations or libraries found in this project.\n\nGet started by adding your first integration or library.\n\n[$(add) Add Integration or Library](command:BI.project-explorer.add)",
         "when": "BI.project.empty"
       },
       {
@@ -261,7 +261,7 @@
       },
       {
         "command": "BI.project-explorer.add",
-        "title": "Add Artifact",
+        "title": "Add Integration or Library",
         "icon": "$(add)",
         "category": "WSO2 Integrator"
       },
