@@ -22,7 +22,7 @@ jobs:
             delivery_mode: archive
           - release_label: 5.0.0 pre-release
             target_ref: 5.0.x
-            delivery_mode: github-release
+            delivery_mode: archive
     steps:
       - name: Trigger Build and Release Artifacts
         uses: actions/github-script@v7
