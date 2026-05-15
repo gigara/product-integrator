@@ -261,7 +261,7 @@
       },
       {
         "command": "BI.project-explorer.add",
-        "title": "Add",
+        "title": "Add Integration or Library",
         "icon": "$(add)",
         "category": "WSO2 Integrator"
       },
