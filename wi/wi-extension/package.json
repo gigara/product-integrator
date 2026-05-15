@@ -145,12 +145,12 @@
       },
       {
         "view": "wso2-integrator.explorer",
-        "contents": "Welcome to WSO2 Integrator.\n\nYour current Ballerina distribution is not supported. Please update to version 2201.12.3 or above to continue.\n\n[Update Ballerina](command:wso2.integrator.setupBallerinaVisually)\n\nAfter updating, restart the editor to apply the changes. [Learn more](https://wso2.github.io/docs-integrator/)",
+        "contents": "Welcome to WSO2 Integrator.\n\nYour current Ballerina distribution is not supported. Please update to version 2201.12.3 or above to continue.\n\n[Update Ballerina](command:wso2.integrator.setupBallerinaVisually)\n\nAfter updating, restart the editor to apply the changes. [Learn more](https://wso2.com/integration-platform/docs/)",
         "when": "(!WI.projectType || (WI.projectType != 'si' && WI.projectType != 'mi' && WI.projectType != 'none')) && BI.status == 'updateNeed'"
       },
       {
         "view": "wso2-integrator.explorer",
-        "contents": "Welcome to WSO2 Integrator.\n\nA Ballerina distribution is required but was not found on this machine. Please set up Ballerina to get started.\n\n[Set Up Ballerina](command:wso2.integrator.setupBallerinaVisually)\n\nAfter installation, restart the editor to apply the changes. [Learn more](https://wso2.github.io/docs-integrator/)",
+        "contents": "Welcome to WSO2 Integrator.\n\nA Ballerina distribution is required but was not found on this machine. Please set up Ballerina to get started.\n\n[Set Up Ballerina](command:wso2.integrator.setupBallerinaVisually)\n\nAfter installation, restart the editor to apply the changes. [Learn more](https://wso2.com/integration-platform/docs/)",
         "when": "(!WI.projectType || (WI.projectType != 'si' && WI.projectType != 'mi' && WI.projectType != 'none')) && BI.status == 'noLS'"
       }
     ],
