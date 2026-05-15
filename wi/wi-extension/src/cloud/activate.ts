@@ -29,12 +29,13 @@ import { dataCacheStore } from "./stores/data-cache-store";
 import { locationStore } from "./stores/location-store";
 import { activateURIHandlers } from "./cloud-uri-handlers";
 import { getExtVersion } from "../utils/commonUtils";
+import { WICloudExtensionAPI } from "./cloud-ext-api";
 
 /**
  * Boot the cloud-connected functionality — mirrors the platform extension's activate():
  * cloudEnv → store rehydration → auth provider → RPC client → initAuth → config → pre-init handler
  */
-export async function activateCloudFunctionality(context: vscode.ExtensionContext): Promise<void> {
+export async function activateCloudFunctionality(context: vscode.ExtensionContext, cloudAPIs: WICloudExtensionAPI): Promise<void> {
 	// 1. Resolve cloud environment
 	ext.cloudEnv =
 		process.env.CHOREO_ENV ||
@@ -106,6 +107,9 @@ export async function activateCloudFunctionality(context: vscode.ExtensionContex
 
 	// 15. Register URI handlers (sign-in callback, deep-link open)
 	activateURIHandlers();
+
+	// 16. Mark cloud Cloud functionality APIs as active
+	cloudAPIs.setActive(true);
 }
 
 function registerPreInitHandlers(): void {
