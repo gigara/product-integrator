@@ -97,7 +97,6 @@ export function ProjectFormFields({
     const [pathTouched, setPathTouched] = useState(false);
     const [editablePath, setEditablePath] = useState("");
     const hasUserToggledCreateWithinProject = useRef(false);
-    const hasAutoInitializedProjectMode = useRef(false);
     const handleTouched = useRef(false);
     const firstFieldRef = useRef<HTMLInputElement>(null);
     const orgNameInitialized = useRef(false);
@@ -208,24 +207,11 @@ export function ProjectFormFields({
                     }
                 }
             }
-            if (
-                !hasAutoInitializedProjectMode.current &&
-                !hasUserToggledCreateWithinProject.current &&
-                isProjectModeSupported
-            ) {
-                hasAutoInitializedProjectMode.current = true;
-                const updates: Partial<ProjectFormData> = { createWithinProject: true };
-                if (!formData.withinProjectName) {
-                    updates.withinProjectName = DEFAULT_PROJECT_NAME;
-                }
-                onFormDataChange(updates);
-            }
         })();
     }, [
         workspaceReady,
         wsClient,
         workspacePath,
-        isProjectModeSupported,
         formData.path,
         formData.packageName,
         formData.withinProjectName,
@@ -437,10 +423,20 @@ export function ProjectFormFields({
                 />
             </FieldGroup>
 
-            {/* Project Name - shown by default when project mode is supported */}
+            {/* Project Name - shown when checkbox is checked */}
             {isProjectModeSupported && (
                 <ProjectSectionContainer>
                     <ProjectSectionLabel>Project</ProjectSectionLabel>
+                    <SkipOptionRow>
+                        <CheckBox
+                            label="Create within a project"
+                            checked={formData.createWithinProject}
+                            onChange={handleCreateWithinProjectToggle}
+                        />
+                        <Description style={{ marginTop: "6px" }}>
+                            Enable project mode to manage multiple integrations and libraries within a single repository.
+                        </Description>
+                    </SkipOptionRow>
                     <ProjectFieldCollapse isVisible={formData.createWithinProject}>
                         <TextField
                             onTextChange={(value) => {
@@ -470,16 +466,6 @@ export function ProjectFormFields({
                             </CloudErrorActionRow>
                         )}
                     </ProjectFieldCollapse>
-                    <SkipOptionRow>
-                        <CheckBox
-                            label="Create within a project"
-                            checked={formData.createWithinProject}
-                            onChange={handleCreateWithinProjectToggle}
-                        />
-                        <Description style={{ marginTop: "6px" }}>
-                            Enable project mode to manage multiple integrations and libraries within a single repository.
-                        </Description>
-                    </SkipOptionRow>
                 </ProjectSectionContainer>
             )}
 
