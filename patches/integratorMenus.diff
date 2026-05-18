@@ -52,6 +52,15 @@ Index: product-integrator/lib/vscode/src/vs/workbench/browser/actions/helpAction
  			},
  			category: Categories.Help,
  			f1: true,
+@@ -328,7 +330,7 @@ class GetStartedWithAccessibilityFeatures extends Action2 {
+ 	}
+ 	run(accessor: ServicesAccessor): void {
+ 		const commandService = accessor.get(ICommandService);
+-		commandService.executeCommand('workbench.action.openWalkthrough', 'SetupAccessibility');
++		commandService.executeCommand('workbench.action.openAccessibilitySettings');
+ 	}
+ }
+ 
 @@ -358,7 +360,7 @@ MenuRegistry.appendMenuItem(MenuId.Menub
  	},
  	order: 7,
