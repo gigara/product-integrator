@@ -48,7 +48,7 @@ Start your integration journey with the [official documentation](https://wso2.co
 
 ## **Contributing**
 
-We welcome developer contributions. Please see our repository documentation for contributing workflows, branch management, and pull request standards.
+We welcome developer contributions. Please see our [repository documentation](https://github.com/wso2/product-integrator) for contributing workflows, branch management, and pull request standards.
 
 ## **Support & Resources**
 
