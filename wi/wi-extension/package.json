@@ -8,7 +8,7 @@
   "icon": "resources/icons/wso2-integrator-logo.png",
   "license": "Apache-2.0",
   "repository": {
-    "url": "https://github.com/wso2/vscode-extensions"
+    "url": "https://github.com/wso2/product-integrator"
   },
   "engines": {
     "vscode": "^1.100.0"
