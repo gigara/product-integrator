@@ -14,23 +14,23 @@ The extension has strong graphical and text tools to speed up your entire integr
 
 * **Low-Code / Pro-Code Parity:** Switch between the visual design and source code easily, giving you full control over development.
 
-<img src="https://github.com/wso2/ballerina-vscode/blob/kanushka-patch-1/resources/images/wso2-integrator-diagram.gif?raw=true" width="100%" />
+<img src="https://github.com/wso2/ballerina-vscode/blob/main/resources/images/wso2-integrator-diagram.gif?raw=true" width="100%" />
 
 * **AI-Assisted Development:** Use AI assistance and natural language to automatically create components, map data, and improve flows.
 
-<img src="https://github.com/wso2/ballerina-vscode/blob/kanushka-patch-1/resources/images/wso2-integrator-ai.gif?raw=true" width="100%" />
+<img src="https://github.com/wso2/ballerina-vscode/blob/main/resources/images/wso2-integrator-ai.gif?raw=true" width="100%" />
 
 * **Local Execution & Debugging:** Run, test, and debug locally in VS Code before deployment to ensure reliable CI/CD pipelines.
 
-<img src="https://github.com/wso2/ballerina-vscode/blob/kanushka-patch-1/resources/images/wso2-integrator-debug.gif?raw=true" width="100%" />
+<img src="https://github.com/wso2/ballerina-vscode/blob/main/resources/images/wso2-integrator-debug.gif?raw=true" width="100%" />
 
 * **Integrated Deployment:** Deploy your integration solutions directly to WSO2 Cloud.
 
-<img src="https://github.com/wso2/ballerina-vscode/blob/kanushka-patch-1/resources/images/wso2-integrator-deploy.gif?raw=true" width="100%" />
+<img src="https://github.com/wso2/ballerina-vscode/blob/main/resources/images/wso2-integrator-deploy.gif?raw=true" width="100%" />
 
 * **Profile Selection:** Choose from runtime profiles (Default, MI, and SI) in configuration or settings to match your integration architecture.
 
-<img src="https://github.com/wso2/ballerina-vscode/blob/kanushka-patch-1/resources/images/wso2-integrator-profile.gif?raw=true" width="100%" />
+<img src="https://github.com/wso2/ballerina-vscode/blob/main/resources/images/wso2-integrator-profile.gif?raw=true" width="100%" />
 
 ## **Prerequisites**
 
