@@ -153,11 +153,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<Extens
 
 		// Boot cloud/RPC/auth functionality in the background so product update
 		// notifications are not blocked by Choreo RPC startup in local/dev setups.
-		void activateCloudFunctionality(context).catch((error) => {
+		const cloudAPIs = new WICloudExtensionAPI();
+		void activateCloudFunctionality(context, cloudAPIs).catch((error) => {
 			ext.logError("Cloud functionality failed to activate", error as Error);
 		});
 
-		const exports: ExtensionExports = { cloudAPIs: new WICloudExtensionAPI() };
+		const exports: ExtensionExports = { cloudAPIs };
 		ext.log("WSO2 Integrator Extension activated successfully");
 		return exports;
 	} catch (error) {
