@@ -230,6 +230,9 @@ function ComponentForm() {
 					},
 				});
 
+				const gitLocalData = await wsClient.getLocalGitData(newPath);
+				repoInit.branch = gitLocalData?.upstream?.name;
+
 				workspaceFsPath = newPath;
 				branch = repoInit.branch;
 				gitProvider = repoInit.gitProvider;
