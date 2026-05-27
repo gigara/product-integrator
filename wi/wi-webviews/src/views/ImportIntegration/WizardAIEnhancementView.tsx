@@ -717,7 +717,7 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
                     <>
                         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                             <SpinnerIcon className="codicon codicon-sync" />
-                            <StatusText variant="running">AI Enhancement in progress…</StatusText>
+                            <StatusText variant="running">AI enhancement in progress…</StatusText>
                             <span style={{ fontSize: "11px", color: "var(--vscode-descriptionForeground)", fontVariantNumeric: "tabular-nums" }}>
                                 [{formatElapsed(elapsed)}]
                             </span>

@@ -149,7 +149,7 @@ export function ImportIntegrationForm({
                 This wizard converts external integration projects from MuleSoft or TIBCO into new WSO2 integrator projects, accelerating the migration process.
             </BodyText>
             <Typography variant="h3" sx={{ marginTop: 20 }}>
-                Choose the source platform
+                Choose the Source Platform
             </Typography>
             <BodyText>Select the integration platform that your current project uses:</BodyText>
             {integrationSelectionError && (
