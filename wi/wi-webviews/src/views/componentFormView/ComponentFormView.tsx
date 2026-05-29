@@ -19,7 +19,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, ProgressIndicator, Typography } from "@wso2/ui-toolkit";
 import { GetGitMetadataResp, type WICloudFormContext, type WICloudSubmitComponentsReq } from "@wso2/wi-core";
-import { buildGitURL, type CreateComponentReq, DevantScopes, getTypeOfIntegrationType, type ICreateNewIntegrationCmdIntegrations, makeURLSafe, WICommandIds } from "@wso2/wso2-platform-core";
+import { buildGitURL, type CreateComponentReq, DevantScopes, getTypeOfIntegrationType, type ICreateNewIntegrationCmdIntegrations, makeURLSafe, resolveIntegrationType, WICommandIds } from "@wso2/wso2-platform-core";
 import { useVisualizerContext } from "../../contexts";
 import { useCloudContext } from "../../providers";
 import {
@@ -41,11 +41,16 @@ import { RepoInitSection, type RepoInitData } from "./RepoInitSection";
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function initEntryState(entry: ICreateNewIntegrationCmdIntegrations): EntryFormState {
+	const resolution = resolveIntegrationType(entry.supportedIntegrationTypes ?? []);
+	const initialScope =
+		resolution.kind === "autoPick" || resolution.kind === "autoPickWithWarning"
+			? resolution.scope
+			: entry.supportedIntegrationTypes?.[0];
 	return {
 		displayName: entry.name,
 		selected: true,
 		fsPath: entry.fsPath,
-		selectedIntegrationType: entry.supportedIntegrationTypes?.[0],
+		selectedIntegrationType: initialScope,
 	};
 }
 

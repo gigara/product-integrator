@@ -76,7 +76,7 @@ export class WICloudExtensionAPI implements IWso2PlatformExtensionAPI {
 
 	// Git
 	public localRepoHasChanges = (fsPath: string): Promise<boolean> =>
-		hasDirtyRepo(fsPath, ext.context, ["context.yaml"]);
+		hasDirtyRepo(fsPath, ext.context);
 
 	// Navigation
 	public openClonedDir = (params: Parameters<IWso2PlatformExtensionAPI["openClonedDir"]>[0]): Promise<void> =>
