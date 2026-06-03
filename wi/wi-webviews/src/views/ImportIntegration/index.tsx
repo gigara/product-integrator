@@ -118,6 +118,7 @@ export function ImportIntegration({ onBack }: { onBack?: () => void }) {
             console.error("Error during dry run:", error);
             setDryRunCompleted(true);
             setDryRunSuccessful(false);
+            setDryRunResponse({ error: error instanceof Error ? error.message : String(error), textEdits: {}, report: '', jsonReport: '' });
         }
     };
 
@@ -149,6 +150,7 @@ export function ImportIntegration({ onBack }: { onBack?: () => void }) {
             console.error("Error during migration:", error);
             setMigrationCompleted(true);
             setMigrationSuccessful(false);
+            setMigrationResponse({ error: error instanceof Error ? error.message : String(error), textEdits: {}, report: '', jsonReport: '' });
         }
     };
 

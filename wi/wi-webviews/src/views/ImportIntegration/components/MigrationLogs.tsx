@@ -36,20 +36,21 @@ interface MigrationLogsProps {
 }
 
 const getColourizedLog = (log: string, index: number) => {
-    if (log.startsWith("[SEVERE]")) {
+    const logStr = typeof log === 'string' ? log : String(log ?? '');
+    if (logStr.startsWith("[SEVERE]")) {
         return (
             <LogEntry key={index} style={{ color: "var(--vscode-terminal-ansiRed)" }}>
-                {log}
+                {logStr}
             </LogEntry>
         );
-    } else if (log.startsWith("[WARN]")) {
+    } else if (logStr.startsWith("[WARN]")) {
         return (
             <LogEntry key={index} style={{ color: "var(--vscode-terminal-ansiYellow)" }}>
-                {log}
+                {logStr}
             </LogEntry>
         );
     }
-    return <LogEntry key={index}>{log}</LogEntry>;
+    return <LogEntry key={index}>{logStr}</LogEntry>;
 };
 
 export const MigrationLogs: React.FC<MigrationLogsProps> = ({
@@ -74,7 +75,7 @@ export const MigrationLogs: React.FC<MigrationLogsProps> = ({
 
     return (
         <StepWrapper>
-            {/* Only show header when migration is completed and showHeader is true */}
+            {/* Only show header after migration completes and showHeader is enabled */}
             {migrationCompleted && showHeader && (
                 <CollapsibleHeader onClick={onToggleLogs}>
                     <Typography variant="h4">View Detailed Logs</Typography>
@@ -83,7 +84,7 @@ export const MigrationLogs: React.FC<MigrationLogsProps> = ({
                     </CardAction>
                 </CollapsibleHeader>
             )}
-            {/* Show logs container when open OR when migration is in progress OR when showHeader is false */}
+            {/* Always show container during migration; toggleable after completion */}
             {(isLogsOpen || !migrationCompleted || !showHeader) && (
                 <LogsContainer ref={logsContainerRef}>
                     {migrationLogs.map(getColourizedLog)}

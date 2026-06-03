@@ -40,7 +40,7 @@ export function DryRunView({
     toolPullFailureMessage,
     migrationToolCommandName,
 }: DryRunViewProps) {
-    const [isLogsOpen, setIsLogsOpen] = useState(false);
+    const [isLogsOpen, setIsLogsOpen] = useState(true);
     const { wsClient } = useVisualizerContext();
 
     const parsedReportData = useMemo(() => {
@@ -57,10 +57,10 @@ export function DryRunView({
     }, [migrationResponse?.jsonReport]);
 
     useEffect(() => {
-        if (!migrationCompleted && migrationLogs.length > 0) {
-            setIsLogsOpen(true);
-        } else if (migrationCompleted) {
+        if (migrationCompleted) {
             setIsLogsOpen(false);
+        } else if (migrationLogs.length > 0) {
+            setIsLogsOpen(true);
         }
     }, [migrationCompleted, migrationLogs.length]);
 

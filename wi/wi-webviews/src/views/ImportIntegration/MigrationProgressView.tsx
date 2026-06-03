@@ -66,18 +66,15 @@ export function MigrationProgressView({
     toolPullFailureMessage,
     migrationToolCommandName,
 }: MigrationProgressProps) {
-    const [isLogsOpen, setIsLogsOpen] = useState(false);
+    const [isLogsOpen, setIsLogsOpen] = useState(true);
     const [aiEnhancementEnabled, setAiEnhancementEnabled] = useState(true);
     const { wsClient } = useVisualizerContext();
 
-    // Auto-open logs during migration and auto-collapse when completed
     useEffect(() => {
-        if (!migrationCompleted && migrationLogs.length > 0) {
-            // Migration is in progress and we have logs - open the dropdown
-            setIsLogsOpen(true);
-        } else if (migrationCompleted) {
-            // Migration is completed - collapse the dropdown
+        if (migrationCompleted) {
             setIsLogsOpen(false);
+        } else if (migrationLogs.length > 0) {
+            setIsLogsOpen(true);
         }
     }, [migrationCompleted, migrationLogs.length]);
 
