@@ -629,8 +629,7 @@ export class MainWsManager implements WIVisualizerAPI {
         }
 
         if (!reportContent) {
-            const vscode = await import('vscode');
-            vscode.window.showErrorMessage(`Report for project '${params.projectName}' not found.`);
+            window.showErrorMessage(`Report for project '${params.projectName}' not found.`);
             return;
         }
 
@@ -650,12 +649,11 @@ export class MainWsManager implements WIVisualizerAPI {
     }
 
     async saveMigrationReport(params: SaveMigrationReportRequest): Promise<void> {
-        const vscode = await import('vscode');
         const hasSubReports = params.projectReports && Object.keys(params.projectReports).length > 0;
 
         if (hasSubReports) {
             // For multi-project: show folder picker and save all reports inside it
-            const folderUri = await vscode.window.showOpenDialog({
+            const folderUri = await window.showOpenDialog({
                 canSelectFiles: false,
                 canSelectFolders: true,
                 canSelectMany: false,
@@ -664,24 +662,24 @@ export class MainWsManager implements WIVisualizerAPI {
 
             if (folderUri && folderUri[0]) {
                 const folder = folderUri[0];
-                await vscode.workspace.fs.writeFile(
-                    vscode.Uri.joinPath(folder, 'aggregate_dry_run_report.html'),
+                await workspace.fs.writeFile(
+                    Uri.joinPath(folder, 'aggregate_dry_run_report.html'),
                     Buffer.from(params.reportContent, 'utf8')
                 );
                 for (const [projectName, reportContent] of Object.entries(params.projectReports!)) {
-                    const projectDir = vscode.Uri.joinPath(folder, projectName);
-                    await vscode.workspace.fs.createDirectory(projectDir);
-                    await vscode.workspace.fs.writeFile(
-                        vscode.Uri.joinPath(projectDir, 'migration_report.html'),
+                    const projectDir = Uri.joinPath(folder, projectName);
+                    await workspace.fs.createDirectory(projectDir);
+                    await workspace.fs.writeFile(
+                        Uri.joinPath(projectDir, 'migration_report.html'),
                         Buffer.from(reportContent, 'utf8')
                     );
                 }
-                vscode.window.showInformationMessage(`Migration reports saved to ${folder.fsPath}`);
+                window.showInformationMessage(`Migration reports saved to ${folder.fsPath}`);
             }
         } else {
             // Single-project: show file save dialog
-            const saveUri = await vscode.window.showSaveDialog({
-                defaultUri: vscode.Uri.file(params.defaultFileName),
+            const saveUri = await window.showSaveDialog({
+                defaultUri: Uri.file(params.defaultFileName),
                 filters: {
                     'HTML files': ['html'],
                     'All files': ['*']
@@ -689,8 +687,8 @@ export class MainWsManager implements WIVisualizerAPI {
             });
 
             if (saveUri) {
-                await vscode.workspace.fs.writeFile(saveUri, Buffer.from(params.reportContent, 'utf8'));
-                vscode.window.showInformationMessage(`Migration report saved to ${saveUri.fsPath}`);
+                await workspace.fs.writeFile(saveUri, Buffer.from(params.reportContent, 'utf8'));
+                window.showInformationMessage(`Migration report saved to ${saveUri.fsPath}`);
             }
         }
     }
