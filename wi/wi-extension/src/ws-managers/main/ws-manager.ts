@@ -87,6 +87,16 @@ export class MainWsManager implements WIVisualizerAPI {
     private migratedProjectDisposable: { dispose(): void } | undefined;
     constructor(private projectUri?: string) { }
 
+    /** Dispose all active language-client migration notification subscriptions. */
+    disposeMigrationListeners(): void {
+        this.migrationToolStateDisposable?.dispose();
+        this.migrationToolStateDisposable = undefined;
+        this.migrationToolLogDisposable?.dispose();
+        this.migrationToolLogDisposable = undefined;
+        this.migratedProjectDisposable?.dispose();
+        this.migratedProjectDisposable = undefined;
+    }
+
     async getWebviewContext(): Promise<WebviewContext> {
         const context = StateMachine.getContext();
         return new Promise((resolve) => {
@@ -591,12 +601,12 @@ export class MainWsManager implements WIVisualizerAPI {
         }
 
         // Dispose any listeners from a previous run (e.g. dry-run) to prevent duplicate events.
-        this.migrationToolStateDisposable?.dispose();
-        this.migrationToolLogDisposable?.dispose();
-        this.migratedProjectDisposable?.dispose();
+        this.disposeMigrationListeners();
 
         // Forward language server streaming notifications to the WI webview via BridgeLayer.
-        const projectUri = StateMachine.getContext().projectUri ?? 'global';
+        // Use this.projectUri (the manager's own stable reference) rather than the global StateMachine
+        // context, which can change mid-migration if another wizard opens and mutates the context.
+        const projectUri = this.projectUri ?? 'global';
         this.migrationToolStateDisposable = langClient.onNotification('projectService/stateCallback', (res: any) => {
             try {
                 const stateData: MigrationToolStateData = typeof res === 'string' ? { state: res } : res;
