@@ -101,15 +101,24 @@ export async function openDirectory(openingPath: string, message: string, onSele
     if (openInCurrentWorkspace && onSelect) {
         onSelect();
     }
+
+    // In VS Code Remote (cloud editor), workspace folder URIs carry a remote authority
+    // (e.g. vscode-remote://ssh-remote+host/path). Preserve the scheme and authority from
+    // the existing workspace so the folder opens on the correct remote host. Fall back to
+    // Uri.file() for local-only sessions where no workspace folder exists yet.
+    const existingWorkspaceUri = workspace.workspaceFolders?.[0]?.uri;
+    const buildFolderUri = (p: string) =>
+        existingWorkspaceUri ? existingWorkspaceUri.with({ path: p }) : Uri.file(p);
+
     if (openInCurrentWorkspace === "Current Window") {
         const currentFolder = workspace.workspaceFolders?.[0]?.uri.fsPath;
         if (currentFolder && isSamePath(currentFolder, openingPath)) {
             await commands.executeCommand("workbench.action.reloadWindow");
         } else {
-            await commands.executeCommand("vscode.openFolder", Uri.file(openingPath), { forceNewWindow: false });
+            await commands.executeCommand("vscode.openFolder", buildFolderUri(openingPath), { forceNewWindow: false });
         }
         await commands.executeCommand("workbench.explorer.fileView.focus");
     } else if (openInCurrentWorkspace === "New Window") {
-        await commands.executeCommand("vscode.openFolder", Uri.file(openingPath), { forceNewWindow: true });
+        await commands.executeCommand("vscode.openFolder", buildFolderUri(openingPath), { forceNewWindow: true });
     }
 }
