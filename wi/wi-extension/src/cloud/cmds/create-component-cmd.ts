@@ -40,6 +40,7 @@ import { getGitRemotes, getGitRoot, relativePath } from "../git/util";
 import { contextStore, waitForContextStoreToLoad } from "../stores/context-store";
 import { dataCacheStore } from "../stores/data-cache-store";
 import { isSamePath, isSubpath } from "../../utils/pathUtils";
+import { buildRemoteAwareUri } from "../../utils/uriUtils";
 import { getUserInfoForCmd, isRpcActive, selectOrg, selectProjectWithCreateNew, setExtensionName } from "./cmd-utils";
 import { updateContextFile } from "./create-directory-context-cmd";
 import { WICloudSubmitComponentsReq, WICloudSubmitComponentsResp } from "@wso2/wi-core";
@@ -534,17 +535,11 @@ async function updateCodeServerWithCreatedComp(
 const showReloadWorkspaceMessage = (message: string, workspaceFsPath: string) => {
 	window.showInformationMessage(`${message} Reload workspace to continue`, { modal: true }, "Continue").then(async (resp) => {
 		if (resp === "Continue") {
-			// In VS Code Remote (cloud editor), workspace folder URIs carry a remote authority
-			// (e.g. vscode-remote://ssh-remote+host/path). Using Uri.file() would produce a
-			// file:// URI with no authority, causing VS Code to open the folder on the local
-			// client rather than the remote — resulting in the wrong workspace root.
-			// We preserve the existing workspace URI's scheme and authority so the folder
-			// is opened correctly on the remote, falling back to Uri.file() when there is
-			// no current workspace (e.g. fresh local session).
 			const existingWorkspaceUri = workspace.workspaceFolders?.[0]?.uri;
-			const folderUri = existingWorkspaceUri
-				? existingWorkspaceUri.with({ path: workspaceFsPath })
-				: Uri.file(workspaceFsPath);
+			ext.log(`[openFolder] existingWorkspaceUri: ${existingWorkspaceUri?.toString() ?? "none"}`);
+			ext.log(`[openFolder] targetPath: ${workspaceFsPath}`);
+			const folderUri = buildRemoteAwareUri(workspaceFsPath, existingWorkspaceUri, (p) => Uri.file(p));
+			ext.log(`[openFolder] resolved folderUri: ${folderUri.toString()}`);
 			commands.executeCommand("vscode.openFolder", folderUri, { forceNewWindow: false });
 		}
 	});
