@@ -42,6 +42,7 @@ import {
     SetWebviewCacheParams,
     ShowErrorMessageRequest,
     StoreSubProjectReportsRequest,
+    OpenSubProjectReportRequest,
     ValidateProjectFormRequest,
     WI_BRIDGE_EVENTS,
     WIBridgeRequest,
@@ -354,6 +355,9 @@ export class BridgeLayer {
         );
         registerRoute("storeSubProjectReports", async (request) =>
             wsManager.storeSubProjectReports(request.params as StoreSubProjectReportsRequest)
+        );
+        registerRoute("openSubProjectReport", async (request) =>
+            wsManager.openSubProjectReport(request.params as OpenSubProjectReportRequest)
         );
         registerRoute("validateProjectPath", async (request) =>
             wsManager.validateProjectPath(request.params as ValidateProjectFormRequest)

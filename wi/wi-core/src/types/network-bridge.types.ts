@@ -53,6 +53,7 @@ import {
     SetWebviewCacheParams,
     ShowErrorMessageRequest,
     StoreSubProjectReportsRequest,
+    OpenSubProjectReportRequest,
     ValidateProjectFormRequest,
     ValidateProjectFormResponse,
     WebviewContext,
@@ -138,6 +139,7 @@ export interface WIWsMethodParamsMap {
     openMigrationReport: OpenMigrationReportRequest;
     saveMigrationReport: SaveMigrationReportRequest;
     storeSubProjectReports: StoreSubProjectReportsRequest;
+    openSubProjectReport: OpenSubProjectReportRequest;
     validateProjectPath: ValidateProjectFormRequest;
     openFolder: string;
     openExternal: string;
@@ -209,6 +211,7 @@ export interface WIWsMethodResultMap {
     openMigrationReport: void;
     saveMigrationReport: void;
     storeSubProjectReports: void;
+    openSubProjectReport: void;
     validateProjectPath: ValidateProjectFormResponse;
     openFolder: void;
     openExternal: void;
