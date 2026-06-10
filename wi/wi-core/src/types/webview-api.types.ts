@@ -285,6 +285,10 @@ export interface StoreSubProjectReportsRequest {
     reports: { [projectName: string]: string };
 }
 
+export interface OpenSubProjectReportRequest {
+    projectName: string;
+}
+
 export interface FetchSamplesRequest {
     runtime?: "WSO2: BI" | "WSO2: MI" | "WSO2: SI";
 }
