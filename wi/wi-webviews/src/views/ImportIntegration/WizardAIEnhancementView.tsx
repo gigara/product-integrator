@@ -16,15 +16,12 @@
  * under the License.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import styled from "@emotion/styled";
 import { WIChatNotify } from "@wso2/wi-core";
 import { WsClient } from "../../network-bridge/WsClient";
-import MarkdownRenderer from "../shared/ai/MarkdownRenderer";
-import { splitContent, SegmentType } from "../shared/ai/segment";
-import ToolCallSegment from "../shared/ai/ToolCallSegment";
-import ToolCallGroupSegment, { ToolCallItem } from "../shared/ai/ToolCallGroupSegment";
-import ErrorSegment from "../shared/ai/ErrorSegment";
+import AgentStreamView from "../shared/ai/agentstream/AgentStreamView";
+import type { StreamEntry, StreamItem } from "../shared/ai/agentstream/types";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Types
@@ -35,12 +32,83 @@ type EnhancementStatus = "checking_auth" | "sign_in_required" | "signing_in" | "
 type LoginMethod = "none" | "sso" | "anthropic" | "aws" | "vertex";
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Helpers
+// Stream entry helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
-function formatFileNameForDisplay(filePath: string): string {
-    // Normalize Windows backslashes to forward slashes; preserve full path including extension
-    return filePath.replace(/\\/g, "/");
+function appendToLastEntry(entries: StreamEntry[], item: StreamItem): StreamEntry[] {
+    if (entries.length === 0) {
+        return [{ description: "", items: [item] }];
+    }
+    const last = entries[entries.length - 1];
+    return [...entries.slice(0, -1), { ...last, items: [...last.items, item] }];
+}
+
+function mergeTextToLastEntry(entries: StreamEntry[], text: string): StreamEntry[] {
+    if (entries.length === 0) {
+        return [{ description: "", items: [{ kind: "text", text }] }];
+    }
+    const last = entries[entries.length - 1];
+    const lastItem = last.items[last.items.length - 1];
+    if (lastItem?.kind === "text") {
+        const updatedItems = [...last.items.slice(0, -1), { ...lastItem, text: lastItem.text + text }];
+        return [...entries.slice(0, -1), { ...last, items: updatedItems }];
+    }
+    return [...entries.slice(0, -1), { ...last, items: [...last.items, { kind: "text" as const, text }] }];
+}
+
+function replaceLastTextInLastEntry(entries: StreamEntry[], newText: string): StreamEntry[] {
+    if (entries.length === 0) {
+        return [{ description: "", items: [{ kind: "text", text: newText }] }];
+    }
+    const last = entries[entries.length - 1];
+    let lastTextIdx = -1;
+    for (let i = last.items.length - 1; i >= 0; i--) {
+        if (last.items[i].kind === "text") { lastTextIdx = i; break; }
+    }
+    if (lastTextIdx === -1) {
+        return [...entries.slice(0, -1), { ...last, items: [...last.items, { kind: "text" as const, text: newText }] }];
+    }
+    const updatedItems = last.items.map((item, i) => i === lastTextIdx ? { kind: "text" as const, text: newText } : item);
+    return [...entries.slice(0, -1), { ...last, items: updatedItems }];
+}
+
+function replaceToolCallInEntries(entries: StreamEntry[], resultItem: StreamItem & { kind: "tool_result" }): StreamEntry[] {
+    let matched = false;
+    const updated = entries.map(entry => {
+        if (matched) return entry;
+        const idx = entry.items.findIndex(i => i.kind === "tool_call" && i.toolCallId === resultItem.toolCallId);
+        if (idx === -1) return entry;
+        matched = true;
+        return { ...entry, items: entry.items.map((item, i) => i === idx ? resultItem : item) };
+    });
+    if (!matched) {
+        return appendToLastEntry(entries, resultItem);
+    }
+    return updated;
+}
+
+function applyTaskWriteResult(entries: StreamEntry[], toolOutput: any): StreamEntry[] {
+    const tasks: Array<{ status: string; description: string }> = toolOutput?.tasks ?? [];
+    const inProgressTask = tasks.find(t => t.status === "in_progress");
+    const lastCompletedTask = [...tasks].reverse().find(t => t.status === "completed");
+
+    if (inProgressTask) {
+        if (entries.some(e => e.description === inProgressTask.description)) return entries;
+        return [...entries, { description: inProgressTask.description, items: [], status: "in_progress" as const }];
+    }
+    let updated = entries;
+    if (lastCompletedTask) {
+        updated = entries.map(e =>
+            e.description === lastCompletedTask.description
+                ? { ...e, status: "completed" as const }
+                : e
+        );
+    }
+    const lastEntry = updated[updated.length - 1];
+    if (!lastEntry || lastEntry.description !== "") {
+        updated = [...updated, { description: "", items: [] }];
+    }
+    return updated;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -245,7 +313,7 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
     const enhancementTriggered = useRef(false);
 
     const [status, setStatus] = useState<EnhancementStatus>("checking_auth");
-    const [content, setContent] = useState("");
+    const [entries, setEntries] = useState<StreamEntry[]>([{ description: "", items: [] }]);
     const [elapsed, setElapsed] = useState(0);
     const [signInError, setSignInError] = useState<string | undefined>();
     const [loginMethod, setLoginMethod] = useState<LoginMethod>("none");
@@ -268,19 +336,12 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
     // Accumulates total elapsed seconds across multiple run segments (pause/resume cycles)
     const accumulatedRef = useRef(0);
     const segmentStartRef = useRef<number | null>(null);
-    // Tracks exact tool-call message text keyed by effectiveId (for file tools)
-    const toolCallMessagesRef = useRef<Map<string, string>>(new Map());
-    // Queue of synthetic IDs for file tools that don't emit a real toolCallId
-    const pendingFileToolIdsRef = useRef<string[]>([]);
-    // Queue of synthetic IDs for getCompilationErrors which also lacks a real toolCallId
-    const pendingDiagToolIdsRef = useRef<string[]>([]);
 
     // ── Uptime counter ──────────────────────────────────────────────────────
     useEffect(() => {
         if (status !== "running") {
             return;
         }
-        // Record start of this run segment; do NOT reset accumulated total.
         segmentStartRef.current = Date.now();
         const id = setInterval(() => {
             const segmentElapsed = segmentStartRef.current
@@ -290,7 +351,6 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
         }, 1000);
         return () => {
             clearInterval(id);
-            // Persist elapsed time for the segment that just ended.
             if (segmentStartRef.current) {
                 accumulatedRef.current += Math.floor((Date.now() - segmentStartRef.current) / 1000);
                 segmentStartRef.current = null;
@@ -308,21 +368,13 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
         return `${m}:${String(s).padStart(2, "0")}`;
     }
 
-    const updateContent = useCallback(
-        (updater: (prev: string) => string) => setContent(updater),
-        []
-    );
-
     // ── Chat event handler ──────────────────────────────────────────────────
     const handleChatEvent = useCallback(
         (event: WIChatNotify) => {
             if (event.type === "start") {
                 terminalRef.current = false;
                 setStatus("running");
-                setContent("");
-                toolCallMessagesRef.current.clear();
-                pendingFileToolIdsRef.current = [];
-                pendingDiagToolIdsRef.current = [];
+                // Entries are NOT reset — all stages accumulate for full history
                 return;
             }
 
@@ -333,145 +385,38 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
             switch (event.type) {
 
                 case "content_block":
-                    updateContent((prev) => prev + event.content);
+                    if (event.content) {
+                        setEntries(prev => mergeTextToLastEntry(prev, event.content));
+                    }
                     break;
 
                 case "content_replace":
-                    setContent((prev) => {
-                        const callEnd = prev.lastIndexOf("</toolcall>");
-                        const resultEnd = prev.lastIndexOf("</toolresult>");
-                        const lastAnnotationEnd = Math.max(
-                            callEnd !== -1 ? callEnd + "</toolcall>".length : -1,
-                            resultEnd !== -1 ? resultEnd + "</toolresult>".length : -1,
-                        );
-                        if (lastAnnotationEnd <= 0) { return event.content; }
-                        return prev.substring(0, lastAnnotationEnd) + event.content;
-                    });
+                    setEntries(prev => replaceLastTextInLastEntry(prev, event.content));
                     break;
 
                 case "tool_call": {
-                    const toolName = event.toolName;
-                    const toolCallId = event.toolCallId;
-                    const toolInput = event.toolInput;
-
-                    if (toolName === "LibrarySearchTool") {
-                        const desc = toolInput?.searchDescription;
-                        const msg = desc ? `Searching for ${desc}...` : "Searching for libraries...";
-                        updateContent((prev) => prev + `\n\n<toolcall id="${toolCallId}" tool="${toolName}">${msg}</toolcall>`);
-                    } else if (toolName === "LibraryGetTool") {
-                        updateContent((prev) => prev + `\n\n<toolcall id="${toolCallId}" tool="${toolName}">Fetching library details...</toolcall>`);
-                    } else if (toolName === "HealthcareLibraryProviderTool") {
-                        updateContent((prev) => prev + `\n\n<toolcall id="${toolCallId}" tool="${toolName}">Analyzing request & selecting healthcare libraries...</toolcall>`);
-                    } else if (["file_write", "file_edit", "file_batch_edit"].includes(toolName)) {
-                        const fileName = toolInput?.fileName || "file";
-                        const displayName = formatFileNameForDisplay(fileName);
-                        const msg = toolName === "file_write" ? `Creating ${displayName}` : `Updating ${displayName}`;
-                        // Use the real toolCallId if present; otherwise generate a synthetic one so the
-                        // matching tool_result can still find and replace the <toolcall> tag.
-                        const effectiveId = toolCallId ?? `__file_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-                        toolCallMessagesRef.current.set(effectiveId, msg);
-                        if (!toolCallId) { pendingFileToolIdsRef.current.push(effectiveId); }
-                        updateContent((prev) => prev + `\n\n<toolcall id="${effectiveId}" tool="${toolName}">${msg}</toolcall>`);
-                    } else if (toolName === "getCompilationErrors") {
-                        const diagId = toolCallId ?? `__diag_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-                        if (!toolCallId) { pendingDiagToolIdsRef.current.push(diagId); }
-                        updateContent((prev) => prev + `\n\n<toolcall id="${diagId}" tool="${toolName}">Checking for errors...</toolcall>`);
-                    } else if (toolName === "runTests") {
-                        updateContent((prev) => prev + `\n\n<toolcall id="${toolCallId}" tool="${toolName}">Running tests...</toolcall>`);
-                    }
+                    const newItem: StreamItem = {
+                        kind: "tool_call",
+                        toolCallId: event.toolCallId,
+                        toolName: event.toolName,
+                        toolInput: event.toolInput,
+                    };
+                    setEntries(prev => appendToLastEntry(prev, newItem));
                     break;
                 }
 
                 case "tool_result": {
-                    const toolName = event.toolName;
-                    const toolCallId = event.toolCallId;
-                    const toolOutput = event.toolOutput;
-
-                    if (toolName === "LibrarySearchTool") {
-                        const desc = toolOutput?.searchDescription;
-                        const origMsg = desc ? `Searching for ${desc}...` : "Searching for libraries...";
-                        const doneMsg = desc
-                            ? `${desc.charAt(0).toUpperCase() + desc.slice(1)} search completed`
-                            : "Library search completed";
-                        const failedAttrLS = event.failed ? ` failed="true"` : "";
-                        updateContent((prev) =>
-                            prev.replace(
-                                `<toolcall id="${toolCallId}" tool="${toolName}">${origMsg}</toolcall>`,
-                                `<toolresult id="${toolCallId}" tool="${toolName}"${failedAttrLS}>${doneMsg}</toolresult>`
-                            )
-                        );
-                    } else if (toolName === "LibraryGetTool") {
-                        const libs = toolOutput || [];
-                        const resultMsg = libs.length === 0 ? "No relevant libraries found" : `Fetched libraries: [${libs.join(", ")}]`;
-                        const failedAttrLG = event.failed ? ` failed="true"` : "";
-                        updateContent((prev) =>
-                            prev.replace(
-                                `<toolcall id="${toolCallId}" tool="${toolName}">Fetching library details...</toolcall>`,
-                                `<toolresult id="${toolCallId}" tool="${toolName}"${failedAttrLG}>${resultMsg}</toolresult>`
-                            )
-                        );
-                    } else if (toolName === "HealthcareLibraryProviderTool") {
-                        const libs = toolOutput || [];
-                        const resultMsg = libs.length === 0
-                            ? "No relevant healthcare libraries found."
-                            : `Fetched healthcare libraries: [${libs.join(", ")}]`;
-                        const failedAttrHL = event.failed ? ` failed="true"` : "";
-                        if (toolCallId) {
-                            updateContent((prev) =>
-                                prev.replace(
-                                    `<toolcall id="${toolCallId}" tool="${toolName}">Analyzing request & selecting healthcare libraries...</toolcall>`,
-                                    `<toolresult id="${toolCallId}" tool="${toolName}"${failedAttrHL}>${resultMsg}</toolresult>`
-                                )
-                            );
-                        }
-                    } else if (["file_write", "file_edit", "file_batch_edit"].includes(toolName)) {
-                        const failedAttrF = event.failed ? ` failed="true"` : "";
-                        // Prefer the real toolCallId; fall back to the oldest pending synthetic ID
-                        const effectiveId = toolCallId ?? pendingFileToolIdsRef.current.shift();
-                        if (effectiveId) {
-                            const origMsg = toolCallMessagesRef.current.get(effectiveId) ?? "";
-                            toolCallMessagesRef.current.delete(effectiveId);
-                            const isCreating = origMsg.startsWith("Creating ");
-                            const displayText = origMsg.replace(/^(Creating|Updating) /, "");
-                            const resultText = !isCreating || toolOutput?.action === "updated" ? "Updated" : "Created";
-                            // Defer the replacement to the next task so React renders the in-progress
-                            // <toolcall> (spinner) state first before replacing it with <toolresult> (tick).
-                            setTimeout(() => {
-                                updateContent((prev) =>
-                                    prev.replace(
-                                        `<toolcall id="${effectiveId}" tool="${toolName}">${origMsg}</toolcall>`,
-                                        `<toolresult id="${effectiveId}" tool="${toolName}"${failedAttrF}>${resultText} ${displayText}</toolresult>`,
-                                    )
-                                );
-                            }, 0);
-                        }
-                    } else if (toolName === "getCompilationErrors") {
-                        const errors = toolOutput?.diagnostics || [];
-                        const errorCount = errors.length;
-                        const msg = errorCount === 0 ? "No errors found" : `Found ${errorCount} error${errorCount > 1 ? "s" : ""}`;
-                        const failedAttrCE = event.failed ? ` failed="true"` : "";
-                        const diagResultId = toolCallId ?? pendingDiagToolIdsRef.current.shift();
-                        if (diagResultId) {
-                            setTimeout(() => {
-                                updateContent((prev) =>
-                                    prev.replace(
-                                        `<toolcall id="${diagResultId}" tool="${toolName}">Checking for errors...</toolcall>`,
-                                        `<toolresult id="${diagResultId}" tool="${toolName}"${failedAttrCE}>${msg}</toolresult>`
-                                    )
-                                );
-                            }, 0);
-                        }
-                    } else if (toolName === "runTests") {
-                        if (toolCallId) {
-                            const resultMsg = toolOutput?.summary ?? "Tests completed";
-                            const failedAttrRT = event.failed ? ` failed="true"` : "";
-                            updateContent((prev) =>
-                                prev.replace(
-                                    `<toolcall id="${toolCallId}" tool="${toolName}">Running tests...</toolcall>`,
-                                    `<toolresult id="${toolCallId}" tool="${toolName}"${failedAttrRT}>${resultMsg}</toolresult>`
-                                )
-                            );
-                        }
+                    if (event.toolName === "TaskWrite") {
+                        setEntries(prev => applyTaskWriteResult(prev, event.toolOutput));
+                    } else {
+                        const resultItem: StreamItem = {
+                            kind: "tool_result",
+                            toolCallId: event.toolCallId,
+                            toolName: event.toolName,
+                            toolOutput: event.toolOutput,
+                            failed: event.failed,
+                        };
+                        setEntries(prev => replaceToolCallInEntries(prev, resultItem as StreamItem & { kind: "tool_result" }));
                     }
                     break;
                 }
@@ -482,12 +427,8 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
                     break;
 
                 case "error": {
-                    const rawMsg = event.content ?? "An unexpected error occurred.";
-                    const safeMsg = rawMsg
-                        .replace(/&/g, "&amp;")
-                        .replace(/</g, "&lt;")
-                        .replace(/>/g, "&gt;");
-                    updateContent((prev) => prev + `\n\n<errormsg>${safeMsg}</errormsg>`);
+                    const errorMsg = event.content ?? "An unexpected error occurred.";
+                    setEntries(prev => appendToLastEntry(prev, { kind: "text", text: `**Error:** ${errorMsg}` }));
                     terminalRef.current = true;
                     setStatus("error");
                     break;
@@ -505,7 +446,7 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
                     break;
             }
         },
-        [updateContent]
+        []
     );
 
     // ── Subscribe to streaming events ───────────────────────────────────────
@@ -545,7 +486,7 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
         const el = scrollRef.current;
         if (!el) return;
         const onScroll = () => {
-            const threshold = 60; // px — within this from the bottom counts as "at bottom"
+            const threshold = 60;
             const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - threshold;
             isUserScrolledUpRef.current = !atBottom;
         };
@@ -560,10 +501,7 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
                 behavior: "smooth",
             });
         }
-    }, [content]);
-
-    // ── Parse content into segments ─────────────────────────────────────────
-    const segments = useMemo(() => splitContent(content), [content]);
+    }, [entries]);
 
     // ── Actions ─────────────────────────────────────────────────────────────
     const handleOpenProject = useCallback(() => {
@@ -688,9 +626,9 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
     // ── Render ───────────────────────────────────────────────────────────────
     const isRunning = status === "running";
     const isPaused = status === "paused";
-    const isDone = status === "completed" || status === "error" || status === "aborted";
     const isAuthPhase = status === "checking_auth" || status === "sign_in_required" || status === "signing_in";
     const openProjectDisabled = projectCount > 15;
+    const hasStreamContent = entries.some(e => e.items.length > 0);
 
     return (
         <Container>
@@ -940,79 +878,14 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
                 </SignInPanel>
             )}
 
-            {!isAuthPhase && <StreamArea ref={scrollRef}>
-                {segments.map((segment, i) => {
-                    if (segment.type === SegmentType.Text) {
-                        if (!segment.text.trim()) {
-                            return null;
-                        }
-                        return <MarkdownRenderer key={`text-${i}`} markdownContent={segment.text} />;
-                    }
-
-                    if (segment.type === SegmentType.ToolCall) {
-                        const currentToolName = segment.toolName;
-
-                        let nextIdx = i + 1;
-                        while (
-                            nextIdx < segments.length &&
-                            segments[nextIdx].type === SegmentType.Text &&
-                            segments[nextIdx].text.trim() === ""
-                        ) {
-                            nextIdx++;
-                        }
-                        const nextSeg = segments[nextIdx];
-                        if (nextSeg && nextSeg.type === SegmentType.ToolCall && nextSeg.toolName === currentToolName) {
-                            return null;
-                        }
-
-                        const groupItems: ToolCallItem[] = [];
-                        let j = i;
-                        while (j >= 0) {
-                            const seg = segments[j];
-                            if (seg.type === SegmentType.ToolCall && seg.toolName === currentToolName) {
-                                groupItems.unshift({
-                                    text: seg.text,
-                                    loading: seg.loading,
-                                    failed: seg.failed,
-                                    toolName: seg.toolName,
-                                });
-                            } else if (seg.type === SegmentType.Text && seg.text.trim() === "") {
-                                j--;
-                                continue;
-                            } else {
-                                break;
-                            }
-                            j--;
-                        }
-
-                        if (groupItems.length === 1) {
-                            return (
-                                <ToolCallSegment
-                                    key={`tool-${i}`}
-                                    text={segment.text}
-                                    loading={segment.loading}
-                                    failed={segment.failed}
-                                />
-                            );
-                        }
-
-                        return <ToolCallGroupSegment key={`tool-group-${i}`} segments={groupItems} />;
-                    }
-
-                    if (segment.type === SegmentType.Error) {
-                        return <ErrorSegment key={`error-${i}`} text={segment.text} />;
-                    }
-
-                    if (segment.text.trim()) {
-                        return <MarkdownRenderer key={`fallback-${i}`} markdownContent={segment.text} />;
-                    }
-                    return null;
-                })}
-
-                {isRunning && segments.length === 0 && (
-                    <StatusText variant="running">Starting AI enhancement agent…</StatusText>
-                )}
-            </StreamArea>}
+            {!isAuthPhase && (
+                <StreamArea ref={scrollRef}>
+                    <AgentStreamView stream={entries} isLoading={isRunning} />
+                    {isRunning && !hasStreamContent && (
+                        <StatusText variant="running">Starting AI enhancement agent…</StatusText>
+                    )}
+                </StreamArea>
+            )}
 
             {!isAuthPhase && <ButtonRow>
                 {isRunning && (
