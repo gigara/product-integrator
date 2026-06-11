@@ -40,7 +40,6 @@ import { getGitRemotes, getGitRoot, relativePath } from "../git/util";
 import { contextStore, waitForContextStoreToLoad } from "../stores/context-store";
 import { dataCacheStore } from "../stores/data-cache-store";
 import { isSamePath, isSubpath } from "../../utils/pathUtils";
-import { buildRemoteAwareUri } from "../../utils/uriUtils";
 import { getUserInfoForCmd, isRpcActive, selectOrg, selectProjectWithCreateNew, setExtensionName } from "./cmd-utils";
 import { updateContextFile } from "./create-directory-context-cmd";
 import { WICloudSubmitComponentsReq, WICloudSubmitComponentsResp } from "@wso2/wi-core";
@@ -535,12 +534,7 @@ async function updateCodeServerWithCreatedComp(
 const showReloadWorkspaceMessage = (message: string, workspaceFsPath: string) => {
 	window.showInformationMessage(`${message} Reload workspace to continue`, { modal: true }, "Continue").then(async (resp) => {
 		if (resp === "Continue") {
-			const existingWorkspaceUri = workspace.workspaceFolders?.[0]?.uri;
-			ext.log(`[openFolder] existingWorkspaceUri: ${existingWorkspaceUri?.toString() ?? "none"}`);
-			ext.log(`[openFolder] targetPath: ${workspaceFsPath}`);
-			const folderUri = buildRemoteAwareUri(workspaceFsPath, existingWorkspaceUri, (p) => Uri.file(p));
-			ext.log(`[openFolder] resolved folderUri: ${folderUri.toString()}`);
-			commands.executeCommand("vscode.openFolder", folderUri, { forceNewWindow: false });
+			commands.executeCommand("vscode.openFolder", Uri.file(workspaceFsPath), { forceNewWindow: false });
 		}
 	});
 }
