@@ -79,6 +79,7 @@ type RequestRouter = ReturnType<typeof createRequestRouter<WIBridgeRequest, WIBr
 interface BridgeChannel {
     transport: TransportManager;
     registration?: { dispose(): void };
+    wsManager: MainWsManager;
 }
 
 export class BridgeLayer {
@@ -191,6 +192,7 @@ export class BridgeLayer {
         if (!channel) {
             return;
         }
+        channel.wsManager.disposeMigrationListeners();
         channel.registration?.dispose();
         channel.transport.dispose();
         this.channels.delete(projectUri);
@@ -220,7 +222,7 @@ export class BridgeLayer {
             handleRequest: (request) => router.handle(request),
         });
 
-        const channel: BridgeChannel = { transport };
+        const channel: BridgeChannel = { transport, wsManager };
         this.channels.set(projectUri, channel);
 
         // Subscribe to cloud state changes and forward as bridge events

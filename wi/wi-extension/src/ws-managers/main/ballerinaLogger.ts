@@ -44,7 +44,7 @@ async function getSharedOutputChannel(): Promise<vscode.OutputChannel | undefine
     pendingChannelPromise = (async () => {
         try {
             const ballerinaExt = await getActiveBallerinaExtension();
-            cachedOutputChannel = ballerinaExt.exports.getOutPutChannel();
+            cachedOutputChannel = ballerinaExt.exports.ballerinaExtInstance.getOutPutChannel();
             return cachedOutputChannel;
         } catch (err) {
             console.error('Failed to acquire shared Ballerina output channel', err);

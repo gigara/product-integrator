@@ -78,7 +78,7 @@ export const MigrationStatusContent: React.FC<MigrationStatusContentProps> = ({
     if (state.isFailed) {
         return (
             <ErrorBanner variant="body3" sx={{ color: "var(--vscode-errorForeground)" }}>
-                Migration error: {migrationResponse.error}
+                Migration error: {migrationResponse?.error ?? 'An unknown error occurred'}
             </ErrorBanner>
         );
     }

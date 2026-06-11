@@ -55,7 +55,9 @@ import {
     DefaultOrgNameResponse,
     SampleItem,
     BIRuntimeStatusResponse,
-    EXTENSION_DEPENDENCIES
+    EXTENSION_DEPENDENCIES,
+    MigrationToolStateData,
+    MigrationToolLogData
 } from "@wso2/wi-core";
 import { commands, extensions, window, workspace, MarkdownString, Uri, env, ConfigurationTarget } from "vscode";
 import { getActiveBallerinaExtension } from "../../utils/ballerinaExtension";
@@ -80,7 +82,20 @@ const PREBUILT_INTEGRATIONS_URL = process.env.PREBUILT_INTEGRATIONS_URL;
 export class MainWsManager implements WIVisualizerAPI {
     private subProjectReports: Map<string, string> = new Map();
     private aggregateReport: string | undefined;
+    private migrationToolStateDisposable: { dispose(): void } | undefined;
+    private migrationToolLogDisposable: { dispose(): void } | undefined;
+    private migratedProjectDisposable: { dispose(): void } | undefined;
     constructor(private projectUri?: string) { }
+
+    /** Dispose all active language-client migration notification subscriptions. */
+    disposeMigrationListeners(): void {
+        this.migrationToolStateDisposable?.dispose();
+        this.migrationToolStateDisposable = undefined;
+        this.migrationToolLogDisposable?.dispose();
+        this.migrationToolLogDisposable = undefined;
+        this.migratedProjectDisposable?.dispose();
+        this.migratedProjectDisposable = undefined;
+    }
 
     async getWebviewContext(): Promise<WebviewContext> {
         const context = StateMachine.getContext();
@@ -579,11 +594,36 @@ export class MainWsManager implements WIVisualizerAPI {
             parameters: params.parameters,
         };
         const langClient = await this.getLangClient();
-        langClient.registerMigrationToolCallbacks();
+        try {
+            langClient.registerMigrationToolCallbacks();
+        } catch (err) {
+            console.error('[WI] registerMigrationToolCallbacks failed (non-fatal):', err);
+        }
 
-        // the WI webview receives onMigratedProject notifications as each project is migrated.
-        const projectUri = StateMachine.getContext().projectUri ?? 'global';
-        langClient.onNotification('projectService/pushMigratedProject', (res: any) => {
+        // Dispose any listeners from a previous run (e.g. dry-run) to prevent duplicate events.
+        this.disposeMigrationListeners();
+
+        // Forward language server streaming notifications to the WI webview via BridgeLayer.
+        // Use this.projectUri (the manager's own stable reference) rather than the global StateMachine
+        // context, which can change mid-migration if another wizard opens and mutates the context.
+        const projectUri = this.projectUri ?? 'global';
+        this.migrationToolStateDisposable = langClient.onNotification('projectService/stateCallback', (res: any) => {
+            try {
+                const stateData: MigrationToolStateData = typeof res === 'string' ? { state: res } : res;
+                BridgeLayer.notifyMigrationToolStateChanged(projectUri, stateData);
+            } catch (error) {
+                console.error('[WI] Error forwarding migrationToolState notification:', error);
+            }
+        });
+        this.migrationToolLogDisposable = langClient.onNotification('projectService/logCallback', (res: any) => {
+            try {
+                const logData: MigrationToolLogData = typeof res === 'string' ? { log: res } : res;
+                BridgeLayer.notifyMigrationToolLogs(projectUri, logData);
+            } catch (error) {
+                console.error('[WI] Error forwarding migrationToolLog notification:', error);
+            }
+        });
+        this.migratedProjectDisposable = langClient.onNotification('projectService/pushMigratedProject', (res: any) => {
             try {
                 BridgeLayer.notifyMigratedProject(res, projectUri);
             } catch (error) {
