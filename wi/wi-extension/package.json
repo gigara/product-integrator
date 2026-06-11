@@ -518,7 +518,6 @@
     "compile": "webpack --mode development",
     "compile-tests": "tsc -p . --outDir out",
     "test": "node ./out/test/runTest.js",
-    "test:unit": "npm run compile-tests && ./node_modules/.bin/mocha out/test/utils/uriUtils.test.js",
     "package": "node ../../external/wso2-vscode-extensions/workspaces/common-libs/scripts/package-vsix.js",
     "download-choreo-cli": "node scripts/download-choreo-cli.js"
   },

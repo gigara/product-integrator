@@ -21,8 +21,6 @@ import * as os from "os";
 import * as path from "path";
 import { Uri, commands, window, workspace } from "vscode";
 import { relativePath } from "../cloud/git/util";
-import { buildRemoteAwareUri } from "./uriUtils";
-import { ext } from "../extensionVariables";
 
 
 export const getNormalizedPath = (filePath: string): string => {
@@ -103,25 +101,15 @@ export async function openDirectory(openingPath: string, message: string, onSele
     if (openInCurrentWorkspace && onSelect) {
         onSelect();
     }
-
-    const existingWorkspaceUri = workspace.workspaceFolders?.[0]?.uri;
-    ext.log(`[openDirectory] existingWorkspaceUri: ${existingWorkspaceUri?.toString() ?? "none"}`);
-    ext.log(`[openDirectory] targetPath: ${openingPath}`);
-    const buildFolderUri = (p: string) => buildRemoteAwareUri(p, existingWorkspaceUri, (fp) => Uri.file(fp));
-
     if (openInCurrentWorkspace === "Current Window") {
         const currentFolder = workspace.workspaceFolders?.[0]?.uri.fsPath;
         if (currentFolder && isSamePath(currentFolder, openingPath)) {
             await commands.executeCommand("workbench.action.reloadWindow");
         } else {
-            const folderUri = buildFolderUri(openingPath);
-            ext.log(`[openDirectory] resolved folderUri (current window): ${folderUri.toString()}`);
-            await commands.executeCommand("vscode.openFolder", folderUri, { forceNewWindow: false });
+            await commands.executeCommand("vscode.openFolder", Uri.file(openingPath), { forceNewWindow: false });
         }
         await commands.executeCommand("workbench.explorer.fileView.focus");
     } else if (openInCurrentWorkspace === "New Window") {
-        const folderUri = buildFolderUri(openingPath);
-        ext.log(`[openDirectory] resolved folderUri (new window): ${folderUri.toString()}`);
-        await commands.executeCommand("vscode.openFolder", folderUri, { forceNewWindow: true });
+        await commands.executeCommand("vscode.openFolder", Uri.file(openingPath), { forceNewWindow: true });
     }
 }
