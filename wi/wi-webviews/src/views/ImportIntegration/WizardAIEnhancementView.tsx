@@ -238,6 +238,17 @@ const SignInErrorText = styled.p`
     color: var(--vscode-errorForeground);
 `;
 
+const ErrorMessageBox = styled.div`
+    margin-top: 4px;
+    padding: 6px 10px;
+    border-radius: 4px;
+    border-left: 3px solid var(--vscode-errorForeground);
+    background-color: var(--vscode-inputValidation-errorBackground, rgba(255,0,0,0.08));
+    font-size: 12px;
+    color: var(--vscode-errorForeground);
+    word-break: break-word;
+`;
+
 const SignInDivider = styled.div`
     display: flex;
     align-items: center;
@@ -316,6 +327,7 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
     const [entries, setEntries] = useState<StreamEntry[]>([{ description: "", items: [] }]);
     const [elapsed, setElapsed] = useState(0);
     const [signInError, setSignInError] = useState<string | undefined>();
+    const [errorMessage, setErrorMessage] = useState<string | undefined>();
     const [loginMethod, setLoginMethod] = useState<LoginMethod>("none");
 
     // Anthropic credentials
@@ -429,6 +441,7 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
                 case "error": {
                     const errorMsg = event.content ?? "An unexpected error occurred.";
                     setEntries(prev => appendToLastEntry(prev, { kind: "text", text: `**Error:** ${errorMsg}` }));
+                    setErrorMessage(errorMsg);
                     terminalRef.current = true;
                     setStatus("error");
                     break;
@@ -670,10 +683,13 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
                     </div>
                 )}
                 {status === "error" && (
-                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                        <span className="codicon codicon-error" style={{ color: "var(--vscode-errorForeground)" }} />
-                        <StatusText variant="error">AI Enhancement encountered an error</StatusText>
-                    </div>
+                    <>
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                            <span className="codicon codicon-error" style={{ color: "var(--vscode-errorForeground)" }} />
+                            <StatusText variant="error">AI Enhancement encountered an error</StatusText>
+                        </div>
+                        {errorMessage && <ErrorMessageBox>{errorMessage}</ErrorMessageBox>}
+                    </>
                 )}
                 {status === "aborted" && (
                     <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
