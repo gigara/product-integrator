@@ -503,7 +503,7 @@ jobs:
   build-windows:
     if: ${{ github.event.inputs.build_windows == 'true' }}
     name: Build (Windows)
-    runs-on: windows-latest
+    runs-on: windows-2022
     needs: [resolve-versions, compile]
     defaults:
       run:
