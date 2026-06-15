@@ -134,11 +134,16 @@ export function LibraryCreationView({ onBack, ballerinaUnavailable }: { onBack?:
             if (!mounted) return;
             setDefaultPath(dp);
             setFormData(prev => ({ ...prev, path: dp }));
+
+            if (isProjectModeSupported) {
+                if (!mounted) return;
+                setCreateWithinProject(true);
+            }
         })();
         return () => {
             mounted = false;
         };
-    }, [workspaceReady, wsClient, workspacePath]);
+    }, [workspaceReady, wsClient, workspacePath, isProjectModeSupported]);
 
     // Initialize org name independently of workspace readiness.
     useEffect(() => {
@@ -494,20 +499,10 @@ export function LibraryCreationView({ onBack, ballerinaUnavailable }: { onBack?:
                                 />
                             </FieldGroup>
 
-                            {/* Project Name - shown when checkbox is checked */}
+                            {/* Project Name - shown by default when project mode is supported */}
                             {isProjectModeSupported && (
                                 <ProjectSectionContainer>
                                     <ProjectSectionLabel>Project</ProjectSectionLabel>
-                                    <SkipOptionRow>
-                                        <CheckBox
-                                            label="Create within a project"
-                                            checked={createWithinProject}
-                                            onChange={handleCreateWithinProjectToggle}
-                                        />
-                                        <Description style={{ marginTop: "6px" }}>
-                                            Enable project mode to manage multiple integrations and libraries within a single repository.
-                                        </Description>
-                                    </SkipOptionRow>
                                     <ProjectFieldCollapse isVisible={createWithinProject}>
                                         <TextField
                                             onTextChange={(value) => {
@@ -537,6 +532,16 @@ export function LibraryCreationView({ onBack, ballerinaUnavailable }: { onBack?:
                                             </CloudErrorActionRow>
                                         )}
                                     </ProjectFieldCollapse>
+                                    <SkipOptionRow>
+                                        <CheckBox
+                                            label="Create within a project"
+                                            checked={createWithinProject}
+                                            onChange={handleCreateWithinProjectToggle}
+                                        />
+                                        <Description style={{ marginTop: "6px" }}>
+                                            Enable project mode to manage multiple integrations and libraries within a single repository.
+                                        </Description>
+                                    </SkipOptionRow>
                                 </ProjectSectionContainer>
                             )}
 
