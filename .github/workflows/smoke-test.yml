@@ -165,7 +165,7 @@ jobs:
   windows:
     if: inputs.windows_artifact_name != '' || inputs.integrator_version != ''
     name: ${{ matrix.example }} (Windows)
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 25
     strategy:
       fail-fast: false
