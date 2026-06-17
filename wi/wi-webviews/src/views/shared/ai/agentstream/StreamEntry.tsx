@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
+ * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com).
  *
  * WSO2 LLC. licenses this file to you under the Apache License,
  * Version 2.0 (the "License"); you may not use this file except
@@ -16,7 +16,7 @@
  * under the License.
  */
 
-import React from "react";
+import React, { useEffect, useRef, useState } from "react";
 import MarkdownRenderer from "../MarkdownRenderer";
 import CommandOutputCard from "./CommandOutputCard";
 import {
@@ -37,6 +37,10 @@ import {
     SonarCenter,
     SonarRing,
     SonarWrapper,
+    ToolGroupBody,
+    ToolGroupChevron,
+    ToolGroupContainer,
+    ToolGroupHeader,
     ToolIcon,
 } from "./styles";
 import { StreamEntry, StreamItem } from "./types";
@@ -63,6 +67,10 @@ const TOOL_ICON_MAP: Record<string, ToolIconEntry> = {
     stopBallerinaService:          { loading: "codicon-debug-stop" },
     getCompilationErrors:          { loading: "codicon-pulse", done: "codicon-pass-filled" },
     TaskWrite:                     { loading: "codicon-checklist" },
+    ConfigCollector:               { loading: "codicon-settings-gear" },
+    ConnectorGeneratorTool:        { loading: "codicon-plug" },
+    migration_source_list:         { loading: "codicon-list-tree" },
+    migration_source_read:         { loading: "codicon-go-to-file" },
 };
 const DEFAULT_TOOL_ICON = "codicon-symbol-property";
 
@@ -109,6 +117,10 @@ function getToolCallDisplay(toolName: string | undefined, toolInput: any): { lab
         case "stopBallerinaService": return { label: "Stopping service..." };
         case "web_search": return { label: toolInput?.query ? "Searching the web:" : "Searching the web...", detail: toolInput?.query };
         case "web_fetch":  return { label: toolInput?.url ? "Fetching from web:" : "Fetching from web...", detail: toolInput?.url };
+        case "ConfigCollector":        return { label: "Reading config…" };
+        case "ConnectorGeneratorTool": return { label: "Generating connector…" };
+        case "migration_source_list":  return { label: "Listing", detail: toolInput?.directory_path ?? "." };
+        case "migration_source_read":  return { label: "Reading", detail: getFileName(toolInput?.file_path) + "…" };
         default: return { label: "Working..." };
     }
 }
@@ -151,11 +163,80 @@ function getToolResultDisplay(toolName: string | undefined, toolOutput: any, hin
         }
         case "web_search": return { label: hint ? "Web search:" : "Web search completed", detail: hint };
         case "web_fetch":  return { label: hint ? "Web fetch:" : "Web fetch completed",  detail: hint };
+        case "ConfigCollector":        return { label: "Config loaded" };
+        case "ConnectorGeneratorTool": return { label: "Connector ready" };
+        case "migration_source_list":  return { label: "Listed", detail: toolOutput?.success === false ? "failed" : undefined };
+        case "migration_source_read":  return { label: "Read", detail: toolOutput?.file_path };
         default: return { label: "Done" };
     }
 }
 
-// ── Item renderer ─────────────────────────────────────────────────────────────
+// ── Tool category grouping ────────────────────────────────────────────────────
+
+type ToolCategory = "editing" | "file_read" | "diagnostics" | "library_search" | "library_get" | "source_list";
+
+const TOOL_CATEGORY_MAP: Partial<Record<string, ToolCategory>> = {
+    file_read:                     "file_read",
+    migration_source_read:         "file_read",
+    file_write:                    "editing",
+    file_edit:                     "editing",
+    file_batch_edit:               "editing",
+    getCompilationErrors:          "diagnostics",
+    LibrarySearchTool:             "library_search",
+    LibraryGetTool:                "library_get",
+    HealthcareLibraryProviderTool: "library_get",
+    migration_source_list:         "source_list",
+};
+
+const CATEGORY_META: Record<ToolCategory, { loadingLabel: string; doneLabel: string; icon: string }> = {
+    file_read:      { loadingLabel: "Reading files…",        doneLabel: "Files read",        icon: "codicon-go-to-file" },
+    editing:        { loadingLabel: "Editing code…",         doneLabel: "Code updated",      icon: "codicon-edit" },
+    diagnostics:    { loadingLabel: "Checking for errors…",  doneLabel: "Check complete",    icon: "codicon-pulse" },
+    library_search: { loadingLabel: "Searching libraries…",  doneLabel: "Libraries found",   icon: "codicon-package" },
+    library_get:    { loadingLabel: "Fetching libraries…",   doneLabel: "Libraries fetched", icon: "codicon-package" },
+    source_list:    { loadingLabel: "Listing source files…", doneLabel: "Source files listed", icon: "codicon-list-tree" },
+};
+
+type ToolGroupSlot = { kind: "tool_group"; category: ToolCategory; items: StreamItem[] };
+type RenderSlot = StreamItem | ToolGroupSlot;
+
+function getItemToolName(item: StreamItem): string | undefined {
+    if (item.kind === "tool_call" || item.kind === "tool_result") return item.toolName;
+    return undefined;
+}
+
+function groupToolItems(items: StreamItem[]): RenderSlot[] {
+    const slots: RenderSlot[] = [];
+    let i = 0;
+    while (i < items.length) {
+        const item = items[i];
+        const toolName = getItemToolName(item);
+        const cat = toolName ? TOOL_CATEGORY_MAP[toolName] : undefined;
+
+        // Groupable: tool_call or tool_result with a known category, not a command-output tool
+        if (cat && (item.kind === "tool_call" || item.kind === "tool_result") && !COMMAND_OUTPUT_TOOLS.has(toolName!)) {
+            const groupItems: StreamItem[] = [];
+            while (i < items.length) {
+                const cur = items[i];
+                const curName = getItemToolName(cur);
+                const curCat = curName ? TOOL_CATEGORY_MAP[curName] : undefined;
+                if ((cur.kind === "tool_call" || cur.kind === "tool_result") && curCat === cat && !COMMAND_OUTPUT_TOOLS.has(curName!)) {
+                    groupItems.push(cur);
+                    i++;
+                } else {
+                    break;
+                }
+            }
+            slots.push({ kind: "tool_group", category: cat, items: groupItems });
+        } else {
+            slots.push(item);
+            i++;
+        }
+    }
+    return slots;
+}
+
+// ── Item renderer — renders a single StreamItem ───────────────────────────────
 
 function renderItem(item: StreamItem, idx: number, streamActive: boolean): React.ReactNode {
     switch (item.kind) {
@@ -228,6 +309,106 @@ function renderItem(item: StreamItem, idx: number, streamActive: boolean): React
     }
 }
 
+// ── Dynamic label helpers for "file_read" category ────────────────────────────
+
+function extractReadFileName(items: StreamItem[]): string | null {
+    const names = items
+        .map(i => {
+            const raw = (i as any).toolInput?.file_path
+                     ?? (i as any).toolInput?.fileName
+                     ?? (i as any).toolOutput?.fileName;
+            return raw ? getFileName(raw) : null;
+        })
+        .filter((n): n is string => !!n);
+    const unique = [...new Set(names)];
+    return unique.length === 1 ? unique[0] : null;
+}
+
+// ── ToolCallGroup — collapsible group for same-category tool calls ─────────────
+
+const ToolCallGroup: React.FC<{ slot: ToolGroupSlot; streamActive: boolean }> = ({ slot, streamActive }) => {
+    const isAnyLoading = slot.items.some(i => i.kind === "tool_call");
+    const hasFailed = slot.items.some(i => i.kind === "tool_result" && (i as any).failed);
+    const meta = CATEGORY_META[slot.category];
+
+    const loadingLabel = (() => {
+        if (slot.category !== "file_read") return meta.loadingLabel;
+        const activeItem = slot.items.find(i => i.kind === "tool_call");
+        const path = (activeItem as any)?.toolInput?.file_path ?? (activeItem as any)?.toolInput?.fileName;
+        return path ? `Reading ${getFileName(path)}…` : meta.loadingLabel;
+    })();
+
+    const doneLabel = (() => {
+        if (slot.category !== "file_read") return meta.doneLabel;
+        const single = extractReadFileName(slot.items);
+        if (single) return `Read ${single}`;
+        const count = slot.items.length;
+        return `Read ${count} file${count !== 1 ? "s" : ""}`;
+    })();
+
+    const [expanded, setExpanded] = useState(isAnyLoading);
+    const autoCollapsedRef = useRef(false);
+
+    useEffect(() => {
+        if (isAnyLoading) {
+            setExpanded(true);
+            autoCollapsedRef.current = false;
+        } else if (!autoCollapsedRef.current) {
+            const t = setTimeout(() => {
+                setExpanded(false);
+                autoCollapsedRef.current = true;
+            }, 1500);
+            return () => clearTimeout(t);
+        }
+    }, [isAnyLoading]);
+
+    const count = slot.items.length;
+
+    return (
+        <ToolGroupContainer>
+            <ToolGroupHeader onClick={() => setExpanded(e => !e)}>
+                <ToolIcon loading={isAnyLoading} failed={hasFailed}>
+                    {isAnyLoading ? (
+                        <span className="codicon codicon-loading codicon-modifier-spin" />
+                    ) : hasFailed ? (
+                        <span className="codicon codicon-error" />
+                    ) : (
+                        <span className={`codicon ${meta.icon}`} />
+                    )}
+                </ToolIcon>
+                <ItemLabel loading={isAnyLoading} failed={hasFailed} style={{ flex: 1 }}>
+                    {isAnyLoading ? loadingLabel : doneLabel}
+                    {count > 1 && (
+                        <span style={{ marginLeft: "5px", fontSize: "11px", opacity: 0.7 }}>({count})</span>
+                    )}
+                </ItemLabel>
+                <ToolGroupChevron expanded={expanded}>
+                    <span className="codicon codicon-chevron-down" />
+                </ToolGroupChevron>
+            </ToolGroupHeader>
+            {expanded && (
+                <ToolGroupBody>
+                    {slot.items.map((item, idx) =>
+                        renderItem(item, idx, streamActive && item.kind === "tool_call")
+                    )}
+                </ToolGroupBody>
+            )}
+        </ToolGroupContainer>
+    );
+};
+
+// ── renderSlots — renders grouped + ungrouped items together ──────────────────
+
+function renderSlots(items: StreamItem[], streamActive: boolean): React.ReactNode[] {
+    const slots = groupToolItems(items);
+    return slots.map((slot, idx) => {
+        if (slot.kind === "tool_group") {
+            return <ToolCallGroup key={`group-${slot.category}-${idx}`} slot={slot} streamActive={streamActive} />;
+        }
+        return renderItem(slot, idx, streamActive);
+    });
+}
+
 // ── NodeStatus helper ─────────────────────────────────────────────────────────
 
 export function getNodeStatus(entry: StreamEntry, isLast: boolean, isLoading: boolean): "active" | "done" {
@@ -259,13 +440,14 @@ const StreamEntryComponent: React.FC<StreamEntryComponentProps> = ({
     hasNextNamedEntry = false,
 }) => {
     const hasItems = entry.items.length > 0;
+    const streamActive = isLast && isLoading;
 
     // Floating entry — no rail, no dot, items render directly in arrival order
     if (!entry.description) {
         if (!hasItems) return null;
         return (
             <EntryBlock style={{ flexDirection: "column" }}>
-                {entry.items.map((item, idx) => renderItem(item, idx, isLast && isLoading))}
+                {renderSlots(entry.items, streamActive)}
             </EntryBlock>
         );
     }
@@ -296,7 +478,7 @@ const StreamEntryComponent: React.FC<StreamEntryComponentProps> = ({
                 {hasItems && (
                     <ItemsArea expanded={expanded}>
                         <ItemsInner ref={innerRef}>
-                            {entry.items.map((item, idx) => renderItem(item, idx, isLast && isLoading))}
+                            {renderSlots(entry.items, streamActive)}
                         </ItemsInner>
                     </ItemsArea>
                 )}

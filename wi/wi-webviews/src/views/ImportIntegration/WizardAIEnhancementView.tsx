@@ -16,9 +16,9 @@
  * under the License.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import styled from "@emotion/styled";
-import { WIChatNotify } from "@wso2/wi-core";
+import { WIChatNotify, WIChatProgress } from "@wso2/wi-core";
 import { WsClient } from "../../network-bridge/WsClient";
 import AgentStreamView from "../shared/ai/agentstream/AgentStreamView";
 import type { StreamEntry, StreamItem } from "../shared/ai/agentstream/types";
@@ -249,6 +249,52 @@ const ErrorMessageBox = styled.div`
     word-break: break-word;
 `;
 
+const ProgressRow = styled.div`
+    display: flex;
+    align-items: center;
+    gap: 8px;
+`;
+
+const ProgressTrack = styled.div`
+    flex: 1;
+    height: 5px;
+    border-radius: 3px;
+    background-color: var(--vscode-progressBar-background, rgba(128,128,128,0.2));
+    overflow: hidden;
+`;
+
+const ProgressFill = styled.div<{ pct: number }>`
+    height: 100%;
+    border-radius: 3px;
+    width: ${(p: { pct: number }) => p.pct}%;
+    background-color: var(--vscode-charts-blue);
+    transition: width 0.4s ease;
+`;
+
+const ProgressLabel = styled.span`
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--vscode-descriptionForeground);
+    flex-shrink: 0;
+    min-width: 30px;
+    text-align: right;
+`;
+
+const ContextRow = styled.div`
+    font-size: 13px;
+    color: var(--vscode-descriptionForeground);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+`;
+
+const ContextSeparator = styled.span`
+    opacity: 0.4;
+`;
+
 const SignInDivider = styled.div`
     display: flex;
     align-items: center;
@@ -328,6 +374,7 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
     const [elapsed, setElapsed] = useState(0);
     const [signInError, setSignInError] = useState<string | undefined>();
     const [errorMessage, setErrorMessage] = useState<string | undefined>();
+    const [progress, setProgress] = useState<WIChatProgress | null>(null);
     const [loginMethod, setLoginMethod] = useState<LoginMethod>("none");
 
     // Anthropic credentials
@@ -419,16 +466,41 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
 
                 case "tool_result": {
                     if (event.toolName === "TaskWrite") {
-                        setEntries(prev => applyTaskWriteResult(prev, event.toolOutput));
-                    } else {
-                        const resultItem: StreamItem = {
+                        // Replace the orphan tool_call left in the floating entry (applyTaskWriteResult
+                        // creates a named entry but never replaces the original call item).
+                        const taskResultItem: StreamItem = {
                             kind: "tool_result",
                             toolCallId: event.toolCallId,
                             toolName: event.toolName,
                             toolOutput: event.toolOutput,
-                            failed: event.failed,
                         };
-                        setEntries(prev => replaceToolCallInEntries(prev, resultItem as StreamItem & { kind: "tool_result" }));
+                        setEntries(prev => {
+                            const withResult = replaceToolCallInEntries(prev, taskResultItem as StreamItem & { kind: "tool_result" });
+                            return applyTaskWriteResult(withResult, event.toolOutput);
+                        });
+                    } else {
+                        setEntries(prev => {
+                            // For tools whose result shape omits the filename, inject the file path
+                            // from the original tool_call so display helpers can show it.
+                            let toolOutput = event.toolOutput;
+                            if (event.toolName === "migration_source_read") {
+                                for (const entry of prev) {
+                                    const orig = entry.items.find(i => i.kind === "tool_call" && i.toolCallId === event.toolCallId) as (StreamItem & { kind: "tool_call" }) | undefined;
+                                    if (orig?.toolInput?.file_path) {
+                                        toolOutput = { ...toolOutput, file_path: orig.toolInput.file_path };
+                                        break;
+                                    }
+                                }
+                            }
+                            const resultItem: StreamItem = {
+                                kind: "tool_result",
+                                toolCallId: event.toolCallId,
+                                toolName: event.toolName,
+                                toolOutput,
+                                failed: event.failed,
+                            };
+                            return replaceToolCallInEntries(prev, resultItem as StreamItem & { kind: "tool_result" });
+                        });
                     }
                     break;
                 }
@@ -453,6 +525,10 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
                     if (!userPausedRef.current) {
                         setStatus("aborted");
                     }
+                    break;
+
+                case "migration_progress":
+                    setProgress(event);
                     break;
 
                 default:
@@ -642,6 +718,26 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
     const isAuthPhase = status === "checking_auth" || status === "sign_in_required" || status === "signing_in";
     const openProjectDisabled = projectCount > 15;
     const hasStreamContent = entries.some(e => e.items.length > 0);
+    const isDone = status === "completed" || status === "error" || status === "aborted";
+
+    const pct = useMemo(() => {
+        if (status === "completed") return 100;
+        if (!progress) return 0;
+        const { completedStagesOverall, totalStagesOverall } = progress;
+        if (totalStagesOverall === 0) return 0;
+        return Math.min(99, Math.round((completedStagesOverall / totalStagesOverall) * 100));
+    }, [progress, status]);
+
+    const showProgress = !isAuthPhase && status !== "aborted" && (isRunning || isPaused || isDone);
+
+    const contextText = useMemo(() => {
+        if (status === "completed") return "All stages complete";
+        if (!progress) return null;
+        const stageLabel = `Stage ${progress.currentStageIndex + 1}/${progress.totalStagesInPackage}: ${progress.currentStageName}`;
+        if (progress.totalPackages <= 1 || !progress.currentPackageName) return stageLabel;
+        const pkgLabel = `Package ${progress.currentPackageIndex + 1}/${progress.totalPackages}: ${progress.currentPackageName}`;
+        return `${pkgLabel}  •  ${stageLabel}`;
+    }, [progress, status]);
 
     return (
         <Container>
@@ -892,6 +988,34 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
                             : "Authenticating with your credentials…"}
                     </SignInMessage>
                 </SignInPanel>
+            )}
+
+            {showProgress && (
+                <>
+                    <ProgressRow>
+                        <ProgressTrack>
+                            <ProgressFill pct={pct} />
+                        </ProgressTrack>
+                        <ProgressLabel>{pct}%</ProgressLabel>
+                    </ProgressRow>
+                    {contextText && (
+                        <ContextRow>
+                            {progress?.totalPackages && progress.totalPackages > 1 && progress.currentPackageName ? (
+                                <>
+                                    <span className="codicon codicon-package" style={{ fontSize: "13px" }} />
+                                    <span>{`Package ${progress.currentPackageIndex + 1}/${progress.totalPackages}: ${progress.currentPackageName}`}</span>
+                                    <ContextSeparator>•</ContextSeparator>
+                                    <span>{`Stage ${progress.currentStageIndex + 1}/${progress.totalStagesInPackage}: ${progress.currentStageName}`}</span>
+                                </>
+                            ) : (
+                                <>
+                                    <span className="codicon codicon-layers" style={{ fontSize: "13px" }} />
+                                    <span>{contextText}</span>
+                                </>
+                            )}
+                        </ContextRow>
+                    )}
+                </>
             )}
 
             {!isAuthPhase && (

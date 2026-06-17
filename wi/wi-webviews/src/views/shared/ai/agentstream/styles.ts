@@ -212,6 +212,46 @@ export const ItemDetail = styled.span`
     font-size: 12px;
 `;
 
+// ── Tool call group (collapsible category grouping) ───────────────────────────
+
+export const ToolGroupContainer = styled.div`
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 4px;
+    margin: 2px 0 4px 0;
+    overflow: hidden;
+`;
+
+export const ToolGroupHeader = styled.div`
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 6px;
+    min-height: 22px;
+    cursor: pointer;
+    user-select: none;
+    &:hover {
+        background-color: var(--vscode-toolbar-hoverBackground);
+    }
+`;
+
+export const ToolGroupChevron = styled.span<{ expanded: boolean }>`
+    font-size: 10px;
+    flex-shrink: 0;
+    color: var(--vscode-descriptionForeground);
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    transform: rotate(${(p: { expanded: boolean }) => p.expanded ? "0deg" : "-90deg"});
+    transition: transform 0.15s ease;
+`;
+
+export const ToolGroupBody = styled.div`
+    border-top: 1px solid var(--vscode-panel-border);
+    padding: 2px 4px 4px 8px;
+    display: flex;
+    flex-direction: column;
+`;
+
 // ── Inline card (command output) ──────────────────────────────────────────────
 
 export const InlineCard = styled.div`
