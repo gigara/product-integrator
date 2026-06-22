@@ -480,7 +480,7 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
                         });
                     } else {
                         setEntries(prev => {
-                            // For tools whose result shape omits the filename, inject the file path
+                            // For tools whose result shape omits path info, inject it
                             // from the original tool_call so display helpers can show it.
                             let toolOutput = event.toolOutput;
                             if (event.toolName === "migration_source_read") {
@@ -488,6 +488,15 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
                                     const orig = entry.items.find(i => i.kind === "tool_call" && i.toolCallId === event.toolCallId) as (StreamItem & { kind: "tool_call" }) | undefined;
                                     if (orig?.toolInput?.file_path) {
                                         toolOutput = { ...toolOutput, file_path: orig.toolInput.file_path };
+                                        break;
+                                    }
+                                }
+                            }
+                            if (event.toolName === "migration_source_list") {
+                                for (const entry of prev) {
+                                    const orig = entry.items.find(i => i.kind === "tool_call" && i.toolCallId === event.toolCallId) as (StreamItem & { kind: "tool_call" }) | undefined;
+                                    if (orig?.toolInput?.directory_path !== undefined) {
+                                        toolOutput = { ...toolOutput, directory_path: orig.toolInput.directory_path };
                                         break;
                                     }
                                 }

@@ -199,9 +199,7 @@ export const ItemLabel = styled.span<{ loading: boolean; failed?: boolean }>`
     color: ${(props: { loading: boolean; failed?: boolean }) =>
         props.failed
             ? "var(--vscode-errorForeground)"
-            : props.loading
-            ? "var(--vscode-editor-foreground)"
-            : "var(--vscode-descriptionForeground)"};
+            : "var(--vscode-editor-foreground)"};
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -219,6 +217,7 @@ export const ToolGroupContainer = styled.div`
     border-radius: 4px;
     margin: 2px 0 4px 0;
     overflow: hidden;
+    background-color: var(--vscode-textCodeBlock-background);
 `;
 
 export const ToolGroupHeader = styled.div`

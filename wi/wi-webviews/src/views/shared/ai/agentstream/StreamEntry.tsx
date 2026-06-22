@@ -165,7 +165,7 @@ function getToolResultDisplay(toolName: string | undefined, toolOutput: any, hin
         case "web_fetch":  return { label: hint ? "Web fetch:" : "Web fetch completed",  detail: hint };
         case "ConfigCollector":        return { label: "Config loaded" };
         case "ConnectorGeneratorTool": return { label: "Connector ready" };
-        case "migration_source_list":  return { label: "Listed", detail: toolOutput?.success === false ? "failed" : undefined };
+        case "migration_source_list":  return { label: "Listed", detail: toolOutput?.directory_path ?? (toolOutput?.success === false ? "failed" : undefined) };
         case "migration_source_read":  return { label: "Read", detail: toolOutput?.file_path };
         default: return { label: "Done" };
     }
@@ -361,6 +361,35 @@ const ToolCallGroup: React.FC<{ slot: ToolGroupSlot; streamActive: boolean }> = 
             return () => clearTimeout(t);
         }
     }, [isAnyLoading]);
+
+    // Single item: bordered box matching group style, no chevron, no interaction
+    if (slot.items.length === 1) {
+        const item = slot.items[0];
+        const active = item.kind === "tool_call" && streamActive;
+        const failed = !!(item as any).failed;
+        const icon = item.kind === "tool_call"
+            ? getToolIcon(item.toolName, "loading")
+            : getToolResultIcon((item as any).toolName, (item as any).toolOutput);
+        const { label, detail } = item.kind === "tool_call"
+            ? getToolCallDisplay(item.toolName, (item as any).toolInput)
+            : getToolResultDisplay((item as any).toolName, (item as any).toolOutput);
+        return (
+            <ToolGroupContainer>
+                <ToolGroupHeader style={{ cursor: "default", pointerEvents: "none" }}>
+                    <ToolIcon loading={active} failed={failed}>
+                        {active ? (
+                            <span className="codicon codicon-loading codicon-modifier-spin" />
+                        ) : (
+                            <span className={`codicon ${icon}`} />
+                        )}
+                    </ToolIcon>
+                    <ItemLabel loading={active} failed={failed}>
+                        {label}{detail && <ItemDetail title={detail}>{detail}</ItemDetail>}
+                    </ItemLabel>
+                </ToolGroupHeader>
+            </ToolGroupContainer>
+        );
+    }
 
     const count = slot.items.length;
 
