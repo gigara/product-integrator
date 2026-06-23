@@ -92,7 +92,7 @@ const AgentStreamView: React.FC<AgentStreamViewProps> = ({ stream, isLoading = f
         <PipelineContainer>
             {stream.map((entry, idx) => {
                 const uniqueKey = `${entry.description}::${idx}`;
-                const hasNextNamedEntry = !!(stream[idx + 1]?.description);
+                const hasNextNamedEntry = stream.slice(idx + 1).some(e => !!e.description);
                 return (
                     <StreamEntryComponent
                         key={uniqueKey}

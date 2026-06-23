@@ -93,16 +93,19 @@ function applyTaskWriteResult(entries: StreamEntry[], toolOutput: any): StreamEn
     const lastCompletedTask = [...tasks].reverse().find(t => t.status === "completed");
 
     if (inProgressTask) {
-        if (entries.some(e => e.description === inProgressTask.description)) return entries;
+        if (entries.some(e => e.description === inProgressTask.description && e.status === "in_progress")) return entries;
         return [...entries, { description: inProgressTask.description, items: [], status: "in_progress" as const }];
     }
     let updated = entries;
     if (lastCompletedTask) {
-        updated = entries.map(e =>
-            e.description === lastCompletedTask.description
-                ? { ...e, status: "completed" as const }
-                : e
-        );
+        let done = false;
+        updated = entries.map(e => {
+            if (!done && e.description === lastCompletedTask.description && e.status === "in_progress") {
+                done = true;
+                return { ...e, status: "completed" as const };
+            }
+            return e;
+        });
     }
     const lastEntry = updated[updated.length - 1];
     if (!lastEntry || lastEntry.description !== "") {
@@ -726,7 +729,7 @@ export function WizardAIEnhancementView({ wsClient, projectCount, isMultiProject
     const isPaused = status === "paused";
     const isAuthPhase = status === "checking_auth" || status === "sign_in_required" || status === "signing_in";
     const openProjectDisabled = projectCount > 15;
-    const hasStreamContent = entries.some(e => e.items.length > 0);
+    const hasStreamContent = entries.some(e => e.items.length > 0 || !!e.description);
     const isDone = status === "completed" || status === "error" || status === "aborted";
 
     const pct = useMemo(() => {

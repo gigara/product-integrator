@@ -328,7 +328,7 @@ function extractReadFileName(items: StreamItem[]): string | null {
 
 const ToolCallGroup: React.FC<{ slot: ToolGroupSlot; streamActive: boolean }> = ({ slot, streamActive }) => {
     const isAnyLoading = slot.items.some(i => i.kind === "tool_call");
-    const hasFailed = slot.items.some(i => i.kind === "tool_result" && (i as any).failed);
+    const hasFailed = slot.items.some(i => i.kind === "tool_result" && i.failed);
     const meta = CATEGORY_META[slot.category];
 
     const loadingLabel = (() => {
@@ -441,6 +441,7 @@ function renderSlots(items: StreamItem[], streamActive: boolean): React.ReactNod
 // ── NodeStatus helper ─────────────────────────────────────────────────────────
 
 export function getNodeStatus(entry: StreamEntry, isLast: boolean, isLoading: boolean): "active" | "done" {
+    if (entry.status === "in_progress") return "active";
     if (entry.status === "completed") return "done";
     const hasActiveItem = entry.items.some(i => i.kind === "tool_call");
     if (hasActiveItem || (isLast && isLoading)) return "active";
