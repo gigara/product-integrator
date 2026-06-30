@@ -331,6 +331,17 @@ export interface WIChatError { type: "error"; content: string; }
 export interface WIToolCall { type: "tool_call"; toolName: string; toolInput?: Record<string, any>; toolCallId?: string; }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export interface WIToolResult { type: "tool_result"; toolName: string; toolOutput?: any; toolCallId?: string; failed?: boolean; }
+export interface WIChatProgress {
+    type: "migration_progress";
+    currentPackageIndex: number;
+    totalPackages: number;
+    currentPackageName: string;
+    currentStageIndex: number;
+    totalStagesInPackage: number;
+    currentStageName: string;
+    completedStagesOverall: number;
+    totalStagesOverall: number;
+}
 export type WIChatNotify =
     | WIChatStart
     | WIChatContent
@@ -339,7 +350,8 @@ export type WIChatNotify =
     | WIToolResult
     | WIChatStop
     | WIChatAbort
-    | WIChatError;
+    | WIChatError
+    | WIChatProgress;
 
 export interface WIVisualizerAPI {
     getWebviewContext: () => Promise<WebviewContext>;

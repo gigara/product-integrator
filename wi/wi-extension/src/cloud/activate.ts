@@ -61,10 +61,19 @@ export async function activateCloudFunctionality(context: vscode.ExtensionContex
 	// 5. Install and start the Choreo RPC server
 	await installRPCServer();
 
-	// 6. Create RPC client and wait for it to become active
+	// 6. Create RPC client and expose it immediately so commands are always registered.
+	// Commands are self-guarded by isRpcActive and will return a graceful error until
+	// the client finishes connecting; waitUntilActive() below can now throw without
+	// leaving them permanently absent.
 	const rpcClient = new ChoreoRPCClient();
-	await rpcClient.waitUntilActive();
 	ext.clients = { rpcClient };
+
+	// 14. Register VS Code commands and URI handlers early — before waiting for RPC
+	// so that callers (e.g. the Ballerina extension's SSO flow) can always find them.
+	activateCmds(context);
+	activateURIHandlers();
+
+	await rpcClient.waitUntilActive();
 
 	// 7. Register authentication provider
 	const authProvider = new WSO2AuthenticationProvider(context.secrets, {
@@ -101,12 +110,6 @@ export async function activateCloudFunctionality(context: vscode.ExtensionContex
 
 	// 13. Prompt restart when Advanced configuration keys change
 	registerPreInitHandlers();
-
-	// 14. Register VS Code commands
-	activateCmds(context);
-
-	// 15. Register URI handlers (sign-in callback, deep-link open)
-	activateURIHandlers();
 
 	// 16. Mark cloud Cloud functionality APIs as active
 	cloudAPIs.setActive(true);
