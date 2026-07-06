@@ -77,9 +77,7 @@ export function ImportIntegration({ onBack }: { onBack?: () => void }) {
     // Routes migration tool events to the correct run's state
     const activeRunRef = useRef<"dryRun" | "migration" | null>(null);
 
-    const defaultSteps = aiEnhancementActive
-        ? ["Configure Source", "Report Generation", "Configure Destination", "Rule-Based Migration", "AI Enhancement"]
-        : ["Configure Source", "Report Generation", "Configure Destination", "Rule-Based Migration"];
+    const defaultSteps = ["Configure Source", "Report Generation", "Configure Destination", "Rule-Based Migration", "AI Enhancement"];
 
     // isMultiProject for ConfigureProjectForm is derived from the source config (step 0 selection)
     const boolParamKey = selectedIntegration?.parameters.find(p => p.valueType === "boolean")?.key;
@@ -118,6 +116,7 @@ export function ImportIntegration({ onBack }: { onBack?: () => void }) {
             console.error("Error during dry run:", error);
             setDryRunCompleted(true);
             setDryRunSuccessful(false);
+            setDryRunResponse({ error: error instanceof Error ? error.message : String(error), textEdits: {}, report: '', jsonReport: '' });
         }
     };
 
@@ -149,6 +148,7 @@ export function ImportIntegration({ onBack }: { onBack?: () => void }) {
             console.error("Error during migration:", error);
             setMigrationCompleted(true);
             setMigrationSuccessful(false);
+            setMigrationResponse({ error: error instanceof Error ? error.message : String(error), textEdits: {}, report: '', jsonReport: '' });
         }
     };
 

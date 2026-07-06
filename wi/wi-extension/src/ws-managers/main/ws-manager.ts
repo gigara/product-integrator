@@ -55,7 +55,9 @@ import {
     DefaultOrgNameResponse,
     SampleItem,
     BIRuntimeStatusResponse,
-    EXTENSION_DEPENDENCIES
+    EXTENSION_DEPENDENCIES,
+    MigrationToolStateData,
+    MigrationToolLogData
 } from "@wso2/wi-core";
 import { commands, extensions, window, workspace, MarkdownString, Uri, env, ConfigurationTarget } from "vscode";
 import { getActiveBallerinaExtension } from "../../utils/ballerinaExtension";
@@ -71,7 +73,7 @@ import { BridgeLayer } from "../../BridgeLayer";
 import { OpenMigrationReportRequest, SaveMigrationReportRequest, PullMigrationToolRequest } from "@wso2/wi-core";
 import { StateMachine } from "../../stateMachine";
 import { ext } from "../../extensionVariables";
-import { StoreSubProjectReportsRequest } from "@wso2/wi-core";
+import { StoreSubProjectReportsRequest, OpenSubProjectReportRequest } from "@wso2/wi-core";
 import { ballerinaContext } from "../../bi/ballerinaContext";
 const platform = getPlatform();
 const SAMPLES_INFO_URL = process.env.SAMPLES_INFO_URL;
@@ -79,7 +81,21 @@ const PREBUILT_INTEGRATIONS_URL = process.env.PREBUILT_INTEGRATIONS_URL;
 
 export class MainWsManager implements WIVisualizerAPI {
     private subProjectReports: Map<string, string> = new Map();
+    private aggregateReport: string | undefined;
+    private migrationToolStateDisposable: { dispose(): void } | undefined;
+    private migrationToolLogDisposable: { dispose(): void } | undefined;
+    private migratedProjectDisposable: { dispose(): void } | undefined;
     constructor(private projectUri?: string) { }
+
+    /** Dispose all active language-client migration notification subscriptions. */
+    disposeMigrationListeners(): void {
+        this.migrationToolStateDisposable?.dispose();
+        this.migrationToolStateDisposable = undefined;
+        this.migrationToolLogDisposable?.dispose();
+        this.migrationToolLogDisposable = undefined;
+        this.migratedProjectDisposable?.dispose();
+        this.migratedProjectDisposable = undefined;
+    }
 
     async getWebviewContext(): Promise<WebviewContext> {
         const context = StateMachine.getContext();
@@ -228,7 +244,6 @@ export class MainWsManager implements WIVisualizerAPI {
             } else {
                 const selectedDir = await askProjectPath(params.startPath);
                 if (!selectedDir || selectedDir.length === 0) {
-                    window.showErrorMessage('A folder must be selected');
                     resolve({ path: "" });
                 } else {
                     const dirPath = selectedDir[0].fsPath;
@@ -579,11 +594,36 @@ export class MainWsManager implements WIVisualizerAPI {
             parameters: params.parameters,
         };
         const langClient = await this.getLangClient();
-        langClient.registerMigrationToolCallbacks();
+        try {
+            langClient.registerMigrationToolCallbacks();
+        } catch (err) {
+            console.error('[WI] registerMigrationToolCallbacks failed (non-fatal):', err);
+        }
 
-        // the WI webview receives onMigratedProject notifications as each project is migrated.
-        const projectUri = StateMachine.getContext().projectUri ?? 'global';
-        langClient.onNotification('projectService/pushMigratedProject', (res: any) => {
+        // Dispose any listeners from a previous run (e.g. dry-run) to prevent duplicate events.
+        this.disposeMigrationListeners();
+
+        // Forward language server streaming notifications to the WI webview via BridgeLayer.
+        // Use this.projectUri (the manager's own stable reference) rather than the global StateMachine
+        // context, which can change mid-migration if another wizard opens and mutates the context.
+        const projectUri = this.projectUri ?? 'global';
+        this.migrationToolStateDisposable = langClient.onNotification('projectService/stateCallback', (res: any) => {
+            try {
+                const stateData: MigrationToolStateData = typeof res === 'string' ? { state: res } : res;
+                BridgeLayer.notifyMigrationToolStateChanged(projectUri, stateData);
+            } catch (error) {
+                console.error('[WI] Error forwarding migrationToolState notification:', error);
+            }
+        });
+        this.migrationToolLogDisposable = langClient.onNotification('projectService/logCallback', (res: any) => {
+            try {
+                const logData: MigrationToolLogData = typeof res === 'string' ? { log: res } : res;
+                BridgeLayer.notifyMigrationToolLogs(projectUri, logData);
+            } catch (error) {
+                console.error('[WI] Error forwarding migrationToolLog notification:', error);
+            }
+        });
+        this.migratedProjectDisposable = langClient.onNotification('projectService/pushMigratedProject', (res: any) => {
             try {
                 BridgeLayer.notifyMigratedProject(res, projectUri);
             } catch (error) {
@@ -609,25 +649,87 @@ export class MainWsManager implements WIVisualizerAPI {
     }
 
     async openMigrationReport(params: OpenMigrationReportRequest): Promise<void> {
-        MigrationReportWebview.createOrShow(params.fileName, params.reportContent);
+        this.aggregateReport = params.reportContent;
+        MigrationReportWebview.createOrShow(params.fileName, params.reportContent, false, (projectName: string) => {
+            this.openSubProjectReport({ projectName });
+        });
+    }
+
+    async openSubProjectReport(params: OpenSubProjectReportRequest): Promise<void> {
+        let reportContent = this.subProjectReports.get(params.projectName);
+
+        if (!reportContent) {
+            // Try prefix-match fallback for key variants like "projectName_ballerina"
+            const matchingKey = Array.from(this.subProjectReports.keys()).find(key =>
+                key === params.projectName || key.startsWith(params.projectName)
+            );
+            if (matchingKey) {
+                reportContent = this.subProjectReports.get(matchingKey);
+            }
+        }
+
+        if (!reportContent) {
+            window.showErrorMessage(`Report for project '${params.projectName}' not found.`);
+            return;
+        }
+
+        MigrationReportWebview.createOrShow(
+            params.projectName,
+            reportContent,
+            true,
+            undefined,
+            () => {
+                if (this.aggregateReport) {
+                    MigrationReportWebview.createOrShow('aggregate_dry_run_report', this.aggregateReport, false, (projectName: string) => {
+                        this.openSubProjectReport({ projectName });
+                    });
+                }
+            }
+        );
     }
 
     async saveMigrationReport(params: SaveMigrationReportRequest): Promise<void> {
-        const vscode = await import('vscode');
+        const hasSubReports = params.projectReports && Object.keys(params.projectReports).length > 0;
 
-        // Show save dialog
-        const saveUri = await vscode.window.showSaveDialog({
-            defaultUri: vscode.Uri.file(params.defaultFileName),
-            filters: {
-                'HTML files': ['html'],
-                'All files': ['*']
+        if (hasSubReports) {
+            // For multi-project: show folder picker and save all reports inside it
+            const folderUri = await window.showOpenDialog({
+                canSelectFiles: false,
+                canSelectFolders: true,
+                canSelectMany: false,
+                openLabel: 'Save Reports Here',
+            });
+
+            if (folderUri && folderUri[0]) {
+                const folder = folderUri[0];
+                await workspace.fs.writeFile(
+                    Uri.joinPath(folder, 'aggregate_dry_run_report.html'),
+                    Buffer.from(params.reportContent, 'utf8')
+                );
+                for (const [projectName, reportContent] of Object.entries(params.projectReports!)) {
+                    const projectDir = Uri.joinPath(folder, projectName);
+                    await workspace.fs.createDirectory(projectDir);
+                    await workspace.fs.writeFile(
+                        Uri.joinPath(projectDir, 'migration_report.html'),
+                        Buffer.from(reportContent, 'utf8')
+                    );
+                }
+                window.showInformationMessage(`Migration reports saved to ${folder.fsPath}`);
             }
-        });
+        } else {
+            // Single-project: show file save dialog
+            const saveUri = await window.showSaveDialog({
+                defaultUri: Uri.file(params.defaultFileName),
+                filters: {
+                    'HTML files': ['html'],
+                    'All files': ['*']
+                }
+            });
 
-        if (saveUri) {
-            // Write the report content to the selected file
-            await vscode.workspace.fs.writeFile(saveUri, Buffer.from(params.reportContent, 'utf8'));
-            vscode.window.showInformationMessage(`Migration report saved to ${saveUri.fsPath}`);
+            if (saveUri) {
+                await workspace.fs.writeFile(saveUri, Buffer.from(params.reportContent, 'utf8'));
+                window.showInformationMessage(`Migration report saved to ${saveUri.fsPath}`);
+            }
         }
     }
 

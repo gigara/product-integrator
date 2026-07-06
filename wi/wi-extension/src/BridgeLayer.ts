@@ -42,6 +42,7 @@ import {
     SetWebviewCacheParams,
     ShowErrorMessageRequest,
     StoreSubProjectReportsRequest,
+    OpenSubProjectReportRequest,
     ValidateProjectFormRequest,
     WI_BRIDGE_EVENTS,
     WIBridgeRequest,
@@ -78,6 +79,7 @@ type RequestRouter = ReturnType<typeof createRequestRouter<WIBridgeRequest, WIBr
 interface BridgeChannel {
     transport: TransportManager;
     registration?: { dispose(): void };
+    wsManager: MainWsManager;
 }
 
 export class BridgeLayer {
@@ -190,6 +192,7 @@ export class BridgeLayer {
         if (!channel) {
             return;
         }
+        channel.wsManager.disposeMigrationListeners();
         channel.registration?.dispose();
         channel.transport.dispose();
         this.channels.delete(projectUri);
@@ -219,7 +222,7 @@ export class BridgeLayer {
             handleRequest: (request) => router.handle(request),
         });
 
-        const channel: BridgeChannel = { transport };
+        const channel: BridgeChannel = { transport, wsManager };
         this.channels.set(projectUri, channel);
 
         // Subscribe to cloud state changes and forward as bridge events
@@ -354,6 +357,9 @@ export class BridgeLayer {
         );
         registerRoute("storeSubProjectReports", async (request) =>
             wsManager.storeSubProjectReports(request.params as StoreSubProjectReportsRequest)
+        );
+        registerRoute("openSubProjectReport", async (request) =>
+            wsManager.openSubProjectReport(request.params as OpenSubProjectReportRequest)
         );
         registerRoute("validateProjectPath", async (request) =>
             wsManager.validateProjectPath(request.params as ValidateProjectFormRequest)

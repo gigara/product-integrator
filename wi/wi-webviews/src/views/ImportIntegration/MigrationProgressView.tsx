@@ -66,18 +66,15 @@ export function MigrationProgressView({
     toolPullFailureMessage,
     migrationToolCommandName,
 }: MigrationProgressProps) {
-    const [isLogsOpen, setIsLogsOpen] = useState(false);
+    const [isLogsOpen, setIsLogsOpen] = useState(true);
     const [aiEnhancementEnabled, setAiEnhancementEnabled] = useState(true);
     const { wsClient } = useVisualizerContext();
 
-    // Auto-open logs during migration and auto-collapse when completed
     useEffect(() => {
-        if (!migrationCompleted && migrationLogs.length > 0) {
-            // Migration is in progress and we have logs - open the dropdown
-            setIsLogsOpen(true);
-        } else if (migrationCompleted) {
-            // Migration is completed - collapse the dropdown
+        if (migrationCompleted) {
             setIsLogsOpen(false);
+        } else if (migrationLogs.length > 0) {
+            setIsLogsOpen(true);
         }
     }, [migrationCompleted, migrationLogs.length]);
 
@@ -173,7 +170,7 @@ export function MigrationProgressView({
                             <RadioOption selected={!aiEnhancementEnabled} onClick={() => setAiEnhancementEnabled(false)}>
                                 <RadioInput type="radio" name="ai-enhancement-mode-report" checked={!aiEnhancementEnabled} onChange={() => setAiEnhancementEnabled(false)} />
                                 <RadioContent>
-                                    <RadioTitle>Skip for Now – Enhance Later</RadioTitle>
+                                    <RadioTitle>Skip for Now, Enhance Later</RadioTitle>
                                     <RadioDescription>Keep the project as-is. You can trigger AI enhancement later from the WSO2 Integrator Copilot.</RadioDescription>
                                 </RadioContent>
                             </RadioOption>
@@ -189,7 +186,7 @@ export function MigrationProgressView({
                                     text: isMultiProject ? "Open Workspace" : "Open Project",
                                     onClick: onOpenProject,
                                     disabled: true,
-                                    tooltip: `Opening ${projects.length} projects simultaneously may cause VS Code to become unresponsive. Navigate to the destination path to open them manually.`,
+                                    tooltip: `Opening ${projects.length} projects simultaneously may cause the editor to become unresponsive. Navigate to the destination path to open them manually.`,
                                 }}
                             />
                         ) : (
