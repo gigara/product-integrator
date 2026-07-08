@@ -67,6 +67,8 @@ cat > lib/vscode/product.json <<EOF
     "nameLong": "WSO2 Integrator",
     "applicationName": "wso2-integrator",
     "dataFolderName": ".wso2-integrator",
+    "sharedDataFolderName": ".wso2-integrator-shared",
+    "builtInExtensionsEnabledWithAutoUpdates": [],
     "win32MutexName": "wso2-integrator",
     "licenseName": "MIT",
     "licenseUrl": "https://wso2.com/licenses/",
