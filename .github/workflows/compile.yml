@@ -281,6 +281,15 @@ jobs:
           chmod +x ./ci/build/update-product.sh
           ./ci/build/update-product.sh "${{ needs.resolve-versions.outputs.integrator_version }}"
 
+      # Apply the quilt patches explicitly (from the repo root) instead of relying on the
+      # rush `preRushBuild` apply-patches hook, whose output rush suppresses and whose failure
+      # rush treats as non-fatal — leaving vscode unpatched and later breaking the build
+      # (e.g. the vsix checksum check that disableVsixChecksumCheck is meant to disable).
+      # Running quilt directly here surfaces any patch error and guarantees patches are applied.
+      - name: Apply patches
+        working-directory: .
+        run: quilt push -a
+
       - name: Copy .env.example to .env
         shell: bash
         working-directory: .
