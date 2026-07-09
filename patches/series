@@ -16,3 +16,5 @@ disableThirdPartyExtNotifications.diff
 injectEnvs.diff
 integratorMenus.diff
 removeXmlLanguageAssociation.diff
+disableAgentSessions.diff
+skipCopilotRipgrepShim.diff

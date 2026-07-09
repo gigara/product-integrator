@@ -281,6 +281,15 @@ jobs:
           chmod +x ./ci/build/update-product.sh
           ./ci/build/update-product.sh "${{ needs.resolve-versions.outputs.integrator_version }}"
 
+      # Apply the quilt patches explicitly (from the repo root) instead of relying on the
+      # rush `preRushBuild` apply-patches hook, whose output rush suppresses and whose failure
+      # rush treats as non-fatal — leaving vscode unpatched and later breaking the build
+      # (e.g. the vsix checksum check that disableVsixChecksumCheck is meant to disable).
+      # Running quilt directly here surfaces any patch error and guarantees patches are applied.
+      - name: Apply patches
+        working-directory: .
+        run: quilt push -a
+
       - name: Copy .env.example to .env
         shell: bash
         working-directory: .
@@ -329,12 +338,12 @@ jobs:
           if [ "${{ steps.cache-typescript.outputs.cache-hit }}" = "true" ]; then
             echo "✅ TypeScript cache hit - using cached compilation"
             echo "Skipping core compilation, running validation only"
-            npm exec -- npm-run-all -lp extensions-ci-pr eslint valid-layers-check define-class-fields-check vscode-dts-compile-check tsec-compile-check
+            npm run compile-extensions-build
+            npm exec -- npm-run-all -lp eslint valid-layers-check define-class-fields-check vscode-dts-compile-check tsec-compile-check
           else
             echo "❌ TypeScript cache miss - full compilation required"
             echo "Running complete compilation pipeline"
-            npm run extensions-ci
-            npm run core-ci-pr
+            npm run core-ci
             npm exec -- npm-run-all -lp eslint valid-layers-check define-class-fields-check vscode-dts-compile-check tsec-compile-check
           fi
 
