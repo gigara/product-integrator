@@ -6,7 +6,7 @@
 			"type": "editor-browser",
 			"request": "launch",
 			"url": "http://localhost:3000/browser.html",
-			"webRoot": "${workspaceFolder}/wi-webview/src"
+			"webRoot": "${workspaceFolder}/wi-webviews/src"
 		},
 		{
 			"name": "Run Extension",
