@@ -509,7 +509,7 @@ export class MainWsManager implements WIVisualizerAPI {
         if (!bootstrap) {
             throw new Error(
                 'The Ballerina extension did not return BI form WS coordinates. ' +
-                'Ensure the WSO2 Integrator: BI extension is installed and up to date.',
+                'Ensure the Ballerina extension is installed and up to date.',
             );
         }
         return bootstrap;

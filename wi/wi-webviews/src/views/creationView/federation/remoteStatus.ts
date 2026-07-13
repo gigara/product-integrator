@@ -47,9 +47,9 @@ export function describeBiFormRemoteUnavailable(viewLabel: string): string {
     const state = window.__WI_BI_FORM_REMOTE_STATE;
     if (state?.status === "outdated") {
         const installed = state.version ? ` (v${state.version})` : "";
-        return `The installed WSO2 Integrator: BI extension${installed} does not support the embedded ${viewLabel}. ` +
+        return `The installed Ballerina extension${installed} does not support the embedded ${viewLabel}. ` +
             "Update it to the latest version, then reload the window.";
     }
-    return "The WSO2 Integrator: BI extension is not installed. " +
+    return "The Ballerina extension is not installed. " +
         "Install it from the Extensions view, then reload the window.";
 }
