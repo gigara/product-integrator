@@ -23,17 +23,10 @@ import { ProgressIndicator, Typography } from "@wso2/ui-toolkit";
 import { useEffect, useState } from "react";
 import { useVisualizerContext } from "../../../contexts";
 import { loadRemoteModule } from "./loadRemote";
+import { describeBiFormRemoteUnavailable } from "./remoteStatus";
 
 const REMOTE_GLOBAL_NAME = "ballerinaBiForm";
 const REMOTE_MODULE = "./EmbeddedBIProjectForm";
-
-declare global {
-    interface Window {
-        /** Webview URI of the Ballerina-owned BI form remoteEntry.js, injected by
-         *  the extension host at webview creation. Null when Ballerina is absent. */
-        __WI_BI_FORM_REMOTE?: string | null;
-    }
-}
 
 const StateContainer = styled.div`
     display: flex;
@@ -84,7 +77,7 @@ export function RemoteBIProjectForm({
         }
         const remoteUrl = window.__WI_BI_FORM_REMOTE;
         if (!remoteUrl) {
-            setError("The WSO2 Integrator: BI extension is not available or is an older version without the embedded form. Install or update it, then reload the window.");
+            setError(describeBiFormRemoteUnavailable("creation form"));
             return;
         }
         let cancelled = false;

@@ -23,6 +23,7 @@ import { ProgressIndicator, Typography } from "@wso2/ui-toolkit";
 import { useEffect, useState } from "react";
 import { useVisualizerContext } from "../../../contexts";
 import { loadRemoteModule } from "./loadRemote";
+import { describeBiFormRemoteUnavailable } from "./remoteStatus";
 
 const REMOTE_GLOBAL_NAME = "ballerinaBiForm";
 const REMOTE_MODULE = "./EmbeddedImportIntegration";
@@ -59,7 +60,7 @@ export function RemoteImportIntegration({ onBack }: { onBack?: () => void }) {
     useEffect(() => {
         const remoteUrl = window.__WI_BI_FORM_REMOTE;
         if (!remoteUrl) {
-            setError("The WSO2 Integrator: BI extension is not available or is an older version without the embedded wizard. Install or update it, then reload the window.");
+            setError(describeBiFormRemoteUnavailable("migration wizard"));
             return;
         }
         let cancelled = false;
