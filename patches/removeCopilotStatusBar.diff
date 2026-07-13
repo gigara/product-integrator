@@ -1,22 +1,22 @@
-Index: product-integrator/lib/vscode/src/vs/workbench/contrib/chat/browser/chat.contribution.ts
+Index: product-integrator/lib/vscode/src/vs/workbench/contrib/chat/browser/chat.shared.contribution.ts
 ===================================================================
---- product-integrator.orig/lib/vscode/src/vs/workbench/contrib/chat/browser/chat.contribution.ts
-+++ product-integrator/lib/vscode/src/vs/workbench/contrib/chat/browser/chat.contribution.ts
-@@ -114,7 +114,7 @@
- import { LocalAgentsSessionsProvider } from './agentSessions/localAgentSessionsProvider.js';
- import { ChatSessionsViewContrib } from './chatSessions/view/chatSessionsView.js';
+--- product-integrator.orig/lib/vscode/src/vs/workbench/contrib/chat/browser/chat.shared.contribution.ts
++++ product-integrator/lib/vscode/src/vs/workbench/contrib/chat/browser/chat.shared.contribution.ts
+@@ -161,7 +161,7 @@ import { ChatTerminalOutputAccessibleVie
  import { ChatSetupContribution, ChatTeardownContribution } from './chatSetup/chatSetupContributions.js';
+ import { ChatQuotaNotificationContribution } from './chatQuotaNotification.js';
+ import { HasByokModelsContribution } from './hasByokModelsContribution.js';
 -import { ChatStatusBarEntry } from './chatStatus/chatStatusEntry.js';
 +// import { ChatStatusBarEntry } from './chatStatus/chatStatusEntry.js';
- import { ChatVariablesService } from './chatVariables.js';
- import { ChatWidget } from './chatWidget.js';
+ import { ChatVariablesService } from './attachments/chatVariables.js';
+ import { ChatWidget } from './widget/chatWidget.js';
  import { ChatCodeBlockContextProviderService } from './codeBlockContextProviderService.js';
-@@ -1129,7 +1129,7 @@
- registerWorkbenchContribution2(ChatGettingStartedContribution.ID, ChatGettingStartedContribution, WorkbenchPhase.Eventually);
- registerWorkbenchContribution2(ChatSetupContribution.ID, ChatSetupContribution, WorkbenchPhase.BlockRestore);
+@@ -2468,7 +2468,7 @@ registerWorkbenchContribution2(ChatQuota
+ registerWorkbenchContribution2(LocalAgentDisabledInputTipContribution.ID, LocalAgentDisabledInputTipContribution, WorkbenchPhase.AfterRestored);
+ registerWorkbenchContribution2(HasByokModelsContribution.ID, HasByokModelsContribution, WorkbenchPhase.BlockRestore);
  registerWorkbenchContribution2(ChatTeardownContribution.ID, ChatTeardownContribution, WorkbenchPhase.AfterRestored);
 -registerWorkbenchContribution2(ChatStatusBarEntry.ID, ChatStatusBarEntry, WorkbenchPhase.BlockRestore);
 +// registerWorkbenchContribution2(ChatStatusBarEntry.ID, ChatStatusBarEntry, WorkbenchPhase.BlockRestore);
  registerWorkbenchContribution2(BuiltinToolsContribution.ID, BuiltinToolsContribution, WorkbenchPhase.Eventually);
- registerWorkbenchContribution2(ChatAgentSettingContribution.ID, ChatAgentSettingContribution, WorkbenchPhase.AfterRestored);
- // registerWorkbenchContribution2(ChatAgentActionsContribution.ID, ChatAgentActionsContribution, WorkbenchPhase.Eventually);
+ registerWorkbenchContribution2(ClientToolSetsContribution.ID, ClientToolSetsContribution, WorkbenchPhase.Eventually);
+ registerWorkbenchContribution2(UsagesToolContribution.ID, UsagesToolContribution, WorkbenchPhase.BlockRestore);
