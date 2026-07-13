@@ -59,7 +59,7 @@ export function RemoteImportIntegration({ onBack }: { onBack?: () => void }) {
     useEffect(() => {
         const remoteUrl = window.__WI_BI_FORM_REMOTE;
         if (!remoteUrl) {
-            setError("The Ballerina extension is not available. Ensure the WSO2 Integrator: BI extension is installed.");
+            setError("The WSO2 Integrator: BI extension is not available or is an older version without the embedded wizard. Install or update it, then reload the window.");
             return;
         }
         let cancelled = false;

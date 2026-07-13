@@ -20,6 +20,7 @@ import * as vscode from "vscode";
 import { ViewType } from "@wso2/wi-core";
 import { ext } from "./extensionVariables";
 import { Uri } from "vscode";
+import * as fs from "fs";
 import path from "path";
 import { randomBytes } from "crypto";
 import { BridgeLayer } from "./BridgeLayer";
@@ -38,10 +39,21 @@ function getNonce(): string {
 	return randomBytes(16).toString("base64");
 }
 
-/** Absolute path to the Ballerina-owned BI form federation bundle dir, or undefined if Ballerina is not installed. */
+/**
+ * Absolute path to the Ballerina-owned BI form federation bundle dir, or
+ * undefined when it cannot be served: Ballerina is not installed, or the
+ * installed version predates the federated forms (no bundle on disk — e.g. the
+ * app's pinned builtin is older than the Ballerina release that ships it).
+ * The existence check avoids advertising a remoteEntry.js URI that would 404
+ * inside the webview.
+ */
 function getBiFormFederationDir(): string | undefined {
 	const balExt = findBallerinaExtension();
-	return balExt ? path.join(balExt.extensionUri.fsPath, ...BI_FORM_FEDERATION_SUBPATH) : undefined;
+	if (!balExt) {
+		return undefined;
+	}
+	const dir = path.join(balExt.extensionUri.fsPath, ...BI_FORM_FEDERATION_SUBPATH);
+	return fs.existsSync(path.join(dir, BI_FORM_REMOTE_ENTRY)) ? dir : undefined;
 }
 
 /** localResourceRoots entry granting the webview access to the BI form bundle (empty if Ballerina is absent). */
