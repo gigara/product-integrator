@@ -818,6 +818,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # patchWin32DependenciesTask (rcedit re-branding) shells out to signtool.exe
+          # to strip/verify Authenticode signatures. signtool ships with the Windows SDK
+          # but is not on PATH on GitHub-hosted runners, so prepend the newest SDK bin dir
+          # (self-hosted runners already have it on PATH; the pinned version differs).
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if ($signtool) {
+            $env:PATH = "$($signtool.DirectoryName);$env:PATH"
+            Write-Host "Added Windows SDK to PATH: $($signtool.DirectoryName)"
+          } else {
+            Write-Host "WARNING: signtool.exe not found under Windows Kits; build may fail in patchWin32DependenciesTask"
+          }
           npm run gulp "vscode-win32-x64-min-ci"
 
       - name: Build CLI (Windows)
