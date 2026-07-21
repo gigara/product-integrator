@@ -315,6 +315,11 @@ jobs:
 
       - name: Build WI extension
         working-directory: .
+        env:
+          # download-choreo-cli.js fetches release info from the GitHub API; without a
+          # token it uses the unauthenticated 60/hr limit and fails with HTTP 403 under
+          # repeated builds. Authenticate to get the 5000/hr limit.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           node common/scripts/install-run-rush.js build --verbose
 
