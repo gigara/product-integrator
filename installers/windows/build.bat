@@ -88,16 +88,15 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM Modify icp.bat to use the JRE from shared dependencies directory
+REM Modify icp.bat to use the JRE from shared dependencies directory (§D8): prefer
+REM WSO2_INTEGRATOR_JRE_HOME (set by main.ts once ICP/JRE are seeded to the data
+REM folder), else the JRE bundled next to ICP. The rewrite lives in a standalone
+REM script because its embedded quotes/parens corrupt cmd.exe quote tracking inline.
 echo Modifying icp.bat to use JRE from dependencies
-if exist ".\WixPackage\payload\Integrator\components\icp\bin\icp.bat" (
-    REM Make icp.bat resolve the JVM env-aware (§D8): prefer WSO2_INTEGRATOR_JRE_HOME (set by
-    REM main.ts once ICP/JRE are seeded to the data folder), else the JRE bundled next to ICP.
-    REM Replace icp's bare `java` with %WSO2_ICP_JAVA%, then prepend an @-prefixed resolver line
-    REM (added AFTER the replace so its own `bin\java` is not itself rewritten). Backward-compatible.
-    powershell -nologo -noprofile -command "& { $icpScript = '.\WixPackage\payload\Integrator\components\icp\bin\icp.bat'; $jreDir = (Get-ChildItem '.\WixPackage\payload\Integrator\components\dependencies' -Directory -ErrorAction SilentlyContinue | Select-Object -First 1).Name; if ($jreDir) { $content = Get-Content $icpScript -Raw; $content = $content -replace '\bjava\b', '\"%%WSO2_ICP_JAVA%%\"'; $block = '@if defined WSO2_INTEGRATOR_JRE_HOME (set \"WSO2_ICP_JAVA=%%WSO2_INTEGRATOR_JRE_HOME%%\bin\java\") else (set \"WSO2_ICP_JAVA=%%~dp0..\..\dependencies\' + $jreDir + '\bin\java\")' + [Environment]::NewLine; Set-Content -Path $icpScript -Value ($block + $content) -NoNewline; Write-Host \"Updated icp.bat (env-aware JRE, fallback $jreDir)\" } else { Write-Host 'Warning: JRE folder not found in dependencies' } }"
-) else (
-    echo Warning: icp.bat not found in ICP bin directory
+powershell -nologo -noprofile -ExecutionPolicy Bypass -File "%~dp0scripts\patch-icp-jre.ps1"
+if errorlevel 1 (
+    echo ERROR: failed to patch icp.bat for env-aware JRE
+    exit /b 1
 )
 :after_runtimes
 
