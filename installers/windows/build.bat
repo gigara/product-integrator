@@ -38,6 +38,17 @@ if "%~6"=="" (
 REM Clean up any leftover payload directory from a previous build
 if exist ".\WixPackage\payload" rmdir /s /q ".\WixPackage\payload"
 
+REM Clean the WiX intermediate output before each build. The WiX SDK hard-links
+REM obj\...\WSO2-Integrator.msi to bin, and build.bat renames the bin entry to the
+REM final wso2-integrator-<v>[-update].msi (still the same inode). When the second
+REM profile (editor-update) rebuilds, WiX overwrites obj\WSO2-Integrator.msi in place
+REM on that shared inode, clobbering the already-renamed full MSI so both profiles end
+REM up byte-identical. Removing obj forces a fresh inode per build; the previously
+REM renamed *.msi keeps its own inode/content. Only the un-renamed WSO2-Integrator.msi
+REM is deleted from bin so a prior profile's renamed output is preserved.
+if exist ".\WixPackage\obj" rmdir /s /q ".\WixPackage\obj"
+if exist ".\WixPackage\bin\x64\Release\en-US\WSO2-Integrator.msi" del /q ".\WixPackage\bin\x64\Release\en-US\WSO2-Integrator.msi"
+
 @REM REM Extract integrator.zip
 powershell -nologo -noprofile -command "& { Add-Type -A 'System.IO.Compression.FileSystem'; [IO.Compression.ZipFile]::ExtractToDirectory('%~3', '.\WixPackage\payload\Integrator'); }"
 if errorlevel 1 (
