@@ -158,12 +158,30 @@ mv "$ICP_UNZIPPED_PATH"/* "$ICP_TARGET"
 rm -rf "$ICP_UNZIPPED_PATH"
 chmod +x "$ICP_TARGET/bin"/*
 
-# Modify icp.sh to use the JRE from shared dependencies directory
+# Make icp.sh resolve the JVM env-aware (§D8): prefer WSO2_INTEGRATOR_JRE_DIR (set once ICP/JRE
+# are seeded to the data folder), else the JRE bundled next to ICP. Backward-compatible: with the
+# env var unset it resolves to the previous relative path. The resolver is prepended AFTER the
+# replace so its own `bin/java` is not itself rewritten.
 ICP_SCRIPT="$ICP_TARGET/bin/icp.sh"
 if [ -f "$ICP_SCRIPT" ]; then
-    print_info "Modifying icp.sh to use JRE from dependencies ($JRE_FOLDER)"
-    # Replace standalone 'java' invocations with the full path to the JRE java (word-boundary match)
-    sed -i "s|\bjava\b|\"\$SCRIPT_DIR\"/../../dependencies/$JRE_FOLDER/bin/java|g" "$ICP_SCRIPT"
+    print_info "Modifying icp.sh to use JRE (env-aware, fallback $JRE_FOLDER)"
+    sed -i "s|\bjava\b|\"\$WSO2_ICP_JAVA\"|g" "$ICP_SCRIPT"
+    ICP_TMP="$(mktemp)"
+    {
+        head -n 1 "$ICP_SCRIPT"
+        cat <<EOF
+WSO2_ICP_JAVA=""
+_wso2_icp_sd="\$(cd "\$(dirname "\$0")" && pwd)"
+if [ -n "\$WSO2_INTEGRATOR_JRE_HOME" ] && [ -x "\$WSO2_INTEGRATOR_JRE_HOME/bin/java" ]; then
+  WSO2_ICP_JAVA="\$WSO2_INTEGRATOR_JRE_HOME/bin/java"
+else
+  WSO2_ICP_JAVA="\$_wso2_icp_sd/../../dependencies/$JRE_FOLDER/bin/java"
+fi
+EOF
+        tail -n +2 "$ICP_SCRIPT"
+    } > "$ICP_TMP"
+    mv "$ICP_TMP" "$ICP_SCRIPT"
+    chmod +x "$ICP_SCRIPT"
 fi
 
 # Set executable permissions
@@ -193,6 +211,16 @@ sed -e "s/@VERSION@/$RPM_VERSION/g" -e "s/@RELEASE@/$RPM_RELEASE/g" -e "s/@FULLV
 
 # Build RPM package
 print_info "Building RPM package..."
+# INSTALLER_PROFILE=editor-update (§D8): drop the bundled Ballerina from the staged tree
+# before packaging — the client seeds/resolves it from the per-user data folder, and an rpm
+# upgrade removes the old package's ballerina dir while the seeded copy survives.
+if [ "${INSTALLER_PROFILE:-full}" = "editor-update" ]; then
+    # W-B: truly editor-only — drop Ballerina, ICP and the JRE (all seeded to the data folder;
+    # ICP requires the MI extension to read WSO2_INTEGRATOR_ICP_HOME before this build is published).
+    rm -rf "$BALLERINA_TARGET" "$ICP_TARGET" "$DEPENDENCIES_DIR"
+    print_info "editor-update profile: removed bundled Ballerina/ICP/JRE from package"
+fi
+
 rpmbuild --define "_topdir $BUILD_DIR" \
          --define "_rpmdir $RPMS_DIR" \
          --define "_builddir $BUILD_DIR/BUILD" \
@@ -209,6 +237,18 @@ rm -rf "$EXTRACTION_TARGET"
 # Copy built RPM to current directory
 print_info "Copying RPM package to current directory..."
 find "$RPMS_DIR" -name "*.rpm" -exec cp {} "$WORK_DIR/" \;
+
+# Editor-only build: tag the filename so it is distinct from the full first-install RPM
+# (the package Version is unchanged, so it still upgrades a full install cleanly).
+if [ "${INSTALLER_PROFILE:-full}" = "editor-update" ]; then
+    for r in "$WORK_DIR"/*.rpm; do
+        [ -f "$r" ] || continue
+        case "$r" in
+            *-update.rpm) ;;
+            *) mv "$r" "${r%.rpm}-update.rpm" ;;
+        esac
+    done
+fi
 
 # List built packages
 print_info "Built RPM packages:"
