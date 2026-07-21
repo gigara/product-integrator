@@ -116,6 +116,10 @@ jobs:
     name: Build repo
     timeout-minutes: 45
     runs-on: ${{ inputs.runOnAWS && inputs.awsRunnerId || 'ubuntu-latest' }}
+    env:
+      # When AWS creds are absent (e.g. a fork), skip the S3 upload and still produce the
+      # downloadable GitHub build artifacts; upstream (secret set) publishes to S3 as before.
+      HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
     defaults:
       run:
         working-directory: lib/vscode
@@ -669,15 +673,15 @@ jobs:
 
       
       - name: Login to AWS
-        if: ${{ inputs.build_packed_installers == true && github.event_name != 'pull_request' }}
+        if: ${{ inputs.build_packed_installers == true && github.event_name != 'pull_request' && env.HAS_AWS == 'true' }}
         uses: aws-actions/configure-aws-credentials@v5
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
-      
+
       - name: Upload linux artifacts to S3
-        if: ${{ inputs.build_packed_installers == true && github.event_name != 'pull_request' }}
+        if: ${{ inputs.build_packed_installers == true && github.event_name != 'pull_request' && env.HAS_AWS == 'true' }}
         working-directory: .
         run: |
           S3_PATH="s3://${{ secrets.AWS_S3_BUCKET }}/wi/${{ github.run_id }}/"
