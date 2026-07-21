@@ -1,0 +1,80 @@
+{
+  "_comment": "Declares the components published to the WSO2 Integrator update server. generate-update-manifest.mjs renders a signed manifest per (channel, platform, arch) from this + component-versions.properties. URL placeholders: {version}, {ballerinaPlatform}, {jrePlatform}. Requires placeholders: {appVersion}, {ballerinaVersion}, {icpVersion}, {jreVersion}. Artifact hosts must be on the client allowlist (see wso2ComponentUpdateService.ts ALLOWED_HOST_SUFFIXES).",
+  "platformTokens": {
+    "ballerina": {
+      "darwin-x64": "macos",
+      "darwin-arm64": "macos-arm",
+      "linux-x64": "linux",
+      "win32-x64": "windows"
+    },
+    "jre": {
+      "darwin-x64": "macos-64",
+      "darwin-arm64": "macos-arm-64",
+      "linux-x64": "linux-64",
+      "win32-x64": "win-64"
+    }
+  },
+  "components": [
+    {
+      "id": "ballerina-runtime",
+      "kind": "runtime",
+      "versionKey": "ballerina.version",
+      "url": "https://github.com/ballerina-platform/ballerina-distribution/releases/download/v{version}/ballerina-{version}-swan-lake-{ballerinaPlatform}.zip",
+      "requires": { "app": ">={appVersion}", "jre": ">={jreVersion}" },
+      "recommended": true
+    },
+    {
+      "id": "jre",
+      "kind": "runtime",
+      "versionKey": "ballerina.jre.version",
+      "url": "https://github.com/ballerina-platform/ballerina-custom-jre/releases/download/{version}/ballerina-jre-{jrePlatform}-{version}.zip",
+      "recommended": true
+    },
+    {
+      "id": "icp",
+      "kind": "runtime",
+      "versionKey": "icp.version",
+      "url": "https://github.com/wso2/integration-control-plane/releases/download/v{version}/wso2-integration-control-plane-{version}.zip",
+      "requires": { "app": ">={appVersion}" },
+      "recommended": true
+    },
+    {
+      "id": "wso2.ballerina",
+      "kind": "extension",
+      "versionKey": "ballerina.extension.version",
+      "url": "https://open-vsx.org/api/wso2/ballerina/{version}/file/wso2.ballerina-{version}.vsix",
+      "requires": { "app": ">={appVersion}", "ballerina-runtime": ">={ballerinaVersion}" },
+      "recommended": true
+    },
+    {
+      "id": "wso2.micro-integrator",
+      "kind": "extension",
+      "versionKey": "wso2.micro-integrator.extension.version",
+      "url": "https://open-vsx.org/api/wso2/micro-integrator/{version}/file/wso2.micro-integrator-{version}.vsix",
+      "requires": { "app": ">={appVersion}", "icp": ">={icpVersion}" },
+      "recommended": true
+    },
+    {
+      "id": "wso2.streaming-integrator",
+      "kind": "extension",
+      "versionKey": "wso2.streaming-integrator.extension.version",
+      "url": "https://open-vsx.org/api/wso2/streaming-integrator/{version}/file/wso2.streaming-integrator-{version}.vsix",
+      "requires": { "app": ">={appVersion}" },
+      "recommended": true
+    },
+    {
+      "id": "wso2.hurl-client",
+      "kind": "extension",
+      "versionKey": "wso2.hurl-client.extension.version",
+      "url": "https://open-vsx.org/api/wso2/hurl-client/{version}/file/wso2.hurl-client-{version}.vsix",
+      "requires": { "app": ">={appVersion}" }
+    },
+    {
+      "id": "wso2.mcp-server-inspector",
+      "kind": "extension",
+      "versionKey": "wso2.mcp-server-inspector.extension.version",
+      "url": "https://open-vsx.org/api/wso2/mcp-server-inspector/{version}/file/wso2.mcp-server-inspector-{version}.vsix",
+      "requires": { "app": ">={appVersion}" }
+    }
+  ]
+}
