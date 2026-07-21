@@ -10,7 +10,7 @@ Index: product-integrator/lib/vscode/src/main.ts
  import { INLSConfiguration } from './vs/nls.js';
  import { NativeParsedArgs } from './vs/platform/environment/common/argv.js';
  
-@@ -209,6 +210,93 @@ async function onReady() {
+@@ -209,6 +210,125 @@ async function onReady() {
   * Main startup routine
   */
  async function startup(codeCachePath: string | undefined, nlsConfig: INLSConfiguration): Promise<void> {
@@ -92,7 +92,39 @@ Index: product-integrator/lib/vscode/src/main.ts
 +
 +		const appRoot = resolveInstalledDir();
 +
-+		const resolvedRuntimeEnv = resolveProductRuntimeEnvironment(product, appRoot, process.env, process.platform);
++		// Resolve active component overrides (updated Ballerina runtime / ICP / etc.)
++		// installed under the user's data folder so `${COMPONENT:<id>}` tokens in
++		// `runtimeEnv` point at the updated copy instead of the bundled one. Failures
++		// here are non-fatal: we fall back to the bundled paths.
++		const readComponentOverrides = (): Record<string, string> => {
++			const overrides: Record<string, string> = {};
++			try {
++				const dataFolderName = productMeta.dataFolderName;
++				if (!dataFolderName) {
++					return overrides;
++				}
++				const dataFolderHome = path.join(os.homedir(), dataFolderName);
++				const manifestPath = path.join(dataFolderHome, 'components', 'manifest.json');
++				if (!fs.existsSync(manifestPath)) {
++					return overrides;
++				}
++				const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
++				const components = manifest?.components;
++				if (components && typeof components === 'object') {
++					for (const [id, entry] of Object.entries<any>(components)) {
++						const activePath = entry?.active?.path;
++						if (typeof activePath === 'string' && activePath.length > 0) {
++							overrides[id] = path.normalize(path.isAbsolute(activePath) ? activePath : path.join(dataFolderHome, activePath));
++						}
++					}
++				}
++			} catch (err) {
++				console.warn('Failed to read component overrides:', err);
++			}
++			return overrides;
++		};
++
++		const resolvedRuntimeEnv = resolveProductRuntimeEnvironment(product, appRoot, process.env, process.platform, readComponentOverrides());
 +		if (resolvedRuntimeEnv) {
 +			applyProductRuntimeEnvironment(process.env, resolvedRuntimeEnv);
 +			storeProductRuntimeEnvironment(process.env, resolvedRuntimeEnv);
@@ -108,7 +140,7 @@ Index: product-integrator/lib/vscode/src/vs/base/common/product.ts
 ===================================================================
 --- product-integrator.orig/lib/vscode/src/vs/base/common/product.ts
 +++ product-integrator/lib/vscode/src/vs/base/common/product.ts
-@@ -83,11 +83,29 @@ export interface IAgentSdkProductConfig
+@@ -83,11 +83,30 @@ export interface IAgentSdkProductConfig
  	readonly urlTemplate: string;
  }
  
@@ -135,6 +167,7 @@ Index: product-integrator/lib/vscode/src/vs/base/common/product.ts
  	readonly quality?: string;
  	readonly commit?: string;
 +	readonly runtimeEnv?: IProductRuntimeEnvironmentMap | IProductRuntimeEnvironmentByPlatform;
++	readonly bundledComponents?: { readonly [id: string]: string };
  
  	readonly nameShort: string;
  	readonly nameLong: string;
@@ -717,7 +750,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/product/common/runtimeEnvir
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/product/common/runtimeEnvironment.ts
-@@ -0,0 +1,387 @@
+@@ -0,0 +1,409 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Microsoft Corporation. All rights reserved.
 + *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -732,6 +765,10 @@ Index: product-integrator/lib/vscode/src/vs/platform/product/common/runtimeEnvir
 +const PATH_TOKEN_REGEX = /\$\{?PATH}?/i;
 +const PATH_TOKEN_REGEX_GLOBAL = /\$\{?PATH}?/g;
 +const APP_ROOT_TOKEN_REGEX = /\$\{?(?:APP_ROOT|APP_DIR|APP)\}?/g;
++// Matches ${COMPONENT:<id>} or ${COMPONENT:<id>|<fallback>}. The fallback (used
++// when no updated component override is active) must not contain a literal '}',
++// so it references the app root with the brace-less `$APP_ROOT` form.
++const COMPONENT_TOKEN_REGEX = /\$\{COMPONENT:([A-Za-z0-9._-]+)(?:\|([^}]*))?\}/g;
 +
 +export const VSCODE_PRODUCT_RUNTIME_ENV_REPLACE = 'VSCODE_PRODUCT_RUNTIME_ENV_REPLACE';
 +export const VSCODE_PRODUCT_RUNTIME_PATH_PREPEND = 'VSCODE_PRODUCT_RUNTIME_PATH_PREPEND';
@@ -749,7 +786,8 @@ Index: product-integrator/lib/vscode/src/vs/platform/product/common/runtimeEnvir
 +	product: Readonly<Partial<IProductConfiguration>>,
 +	appRoot: string,
 +	env: IProcessEnvironment,
-+	platform: string
++	platform: string,
++	componentOverrides: Readonly<Record<string, string>> = {}
 +): IResolvedProductRuntimeEnvironment | undefined {
 +	const runtimeEnv = _resolveRuntimeEnvMap(product.runtimeEnv, platform);
 +	if (!runtimeEnv) {
@@ -767,7 +805,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/product/common/runtimeEnvir
 +
 +		if (_isPathKey(key)) {
 +			if (typeof value === 'string') {
-+				const segments = _parseConfiguredPath(value, appRoot);
++				const segments = _parseConfiguredPath(value, appRoot, componentOverrides);
 +				pathPrepend = segments.prepend;
 +				pathAppend = segments.append;
 +			}
@@ -775,7 +813,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/product/common/runtimeEnvir
 +		}
 +
 +		if (typeof value === 'string') {
-+			replace[key] = _resolveRuntimeValue(value, appRoot, env);
++			replace[key] = _resolveRuntimeValue(value, appRoot, env, componentOverrides);
 +		} else {
 +			replace[key] = JSON.stringify(value);
 +		}
@@ -908,9 +946,10 @@ Index: product-integrator/lib/vscode/src/vs/platform/product/common/runtimeEnvir
 +	return value && typeof value === 'object' ? value as IProductRuntimeEnvironmentMap : undefined;
 +}
 +
-+function _resolveRuntimeValue(value: string, appRoot: string, env: IProcessEnvironment): string {
++function _resolveRuntimeValue(value: string, appRoot: string, env: IProcessEnvironment, componentOverrides: Readonly<Record<string, string>>): string {
 +	const currentPath = _getPathValue(env);
-+	let resolved = value.replace(PATH_TOKEN_REGEX_GLOBAL, currentPath);
++	let resolved = _resolveComponentTokens(value, componentOverrides);
++	resolved = resolved.replace(PATH_TOKEN_REGEX_GLOBAL, currentPath);
 +	resolved = resolved.replace(APP_ROOT_TOKEN_REGEX, appRoot);
 +	if (_isRelativePath(resolved)) {
 +		resolved = path.normalize(path.join(appRoot, resolved));
@@ -918,8 +957,24 @@ Index: product-integrator/lib/vscode/src/vs/platform/product/common/runtimeEnvir
 +	return resolved;
 +}
 +
-+function _parseConfiguredPath(value: string, appRoot: string): { prepend?: string; append?: string } {
-+	const resolvedValue = value.replace(APP_ROOT_TOKEN_REGEX, appRoot);
++/**
++ * Replace `${COMPONENT:<id>}` / `${COMPONENT:<id>|<fallback>}` tokens with the
++ * active override root for the component when one is installed under the user's
++ * data folder, otherwise with the bundled fallback path. Runs before `${APP_ROOT}`
++ * substitution so a fallback expressed as `$APP_ROOT/...` still resolves.
++ */
++function _resolveComponentTokens(value: string, componentOverrides: Readonly<Record<string, string>>): string {
++	return value.replace(COMPONENT_TOKEN_REGEX, (_match, id: string, fallback: string | undefined) => {
++		const override = componentOverrides[id];
++		if (typeof override === 'string' && override.length > 0) {
++			return override;
++		}
++		return fallback ?? '';
++	});
++}
++
++function _parseConfiguredPath(value: string, appRoot: string, componentOverrides: Readonly<Record<string, string>>): { prepend?: string; append?: string } {
++	const resolvedValue = _resolveComponentTokens(value, componentOverrides).replace(APP_ROOT_TOKEN_REGEX, appRoot);
 +	const pathTokenMatch = PATH_TOKEN_REGEX.exec(resolvedValue);
 +	if (!pathTokenMatch) {
 +		return { prepend: _normalizePathEntries(resolvedValue, appRoot) };
@@ -1105,3 +1160,69 @@ Index: product-integrator/lib/vscode/src/vs/platform/product/common/runtimeEnvir
 +function _isRelativePath(value: string): boolean {
 +	return value.startsWith('./') || value.startsWith('../') || value.startsWith('.\\') || value.startsWith('..\\');
 +}
+Index: product-integrator/lib/vscode/src/vs/platform/product/test/common/runtimeEnvironment.test.ts
+===================================================================
+--- /dev/null
++++ product-integrator/lib/vscode/src/vs/platform/product/test/common/runtimeEnvironment.test.ts
+@@ -0,0 +1,61 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Microsoft Corporation. All rights reserved.
++ *  Licensed under the MIT License. See License.txt in the project root for license information.
++ *--------------------------------------------------------------------------------------------*/
++
++import { deepStrictEqual } from 'assert';
++import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
++import { IProductConfiguration } from '../../../../base/common/product.js';
++import { resolveProductRuntimeEnvironment } from '../../common/runtimeEnvironment.js';
++
++suite('runtimeEnvironment', () => {
++	ensureNoDisposablesAreLeakedInTestSuite();
++
++	// Mirrors the runtimeEnv block generated by ci/build/update-product.sh for darwin,
++	// using the ${COMPONENT:<id>|<fallback>} indirection introduced for component updates.
++	const product = {
++		runtimeEnv: {
++			common: {
++				WSO2_INTEGRATOR_RUNTIME: 'true',
++				__meta: { pathRemovePattern: 'ballerina' }
++			},
++			darwin: {
++				BALLERINA_HOME: '${COMPONENT:ballerina-runtime|$APP_ROOT/Contents/components/ballerina}',
++				PATH: '${COMPONENT:ballerina-runtime|$APP_ROOT/Contents/components/ballerina}/bin'
++			}
++		}
++	} as unknown as IProductConfiguration;
++
++	const appRoot = '/Applications/WSO2 Integrator.app';
++
++	test('resolves ${COMPONENT:*} to the bundled fallback when no override is active', () => {
++		deepStrictEqual(
++			resolveProductRuntimeEnvironment(product, appRoot, {}, 'darwin'),
++			{
++				replace: {
++					WSO2_INTEGRATOR_RUNTIME: 'true',
++					BALLERINA_HOME: '/Applications/WSO2 Integrator.app/Contents/components/ballerina'
++				},
++				pathPrepend: '/Applications/WSO2 Integrator.app/Contents/components/ballerina/bin',
++				pathAppend: undefined,
++				pathRemovePattern: 'ballerina'
++			}
++		);
++	});
++
++	test('resolves ${COMPONENT:*} to the override root when one is installed', () => {
++		const override = '/home/u/.wso2-integrator/components/ballerina-runtime/2201.13.5';
++		deepStrictEqual(
++			resolveProductRuntimeEnvironment(product, appRoot, {}, 'darwin', { 'ballerina-runtime': override }),
++			{
++				replace: {
++					WSO2_INTEGRATOR_RUNTIME: 'true',
++					BALLERINA_HOME: override
++				},
++				pathPrepend: `${override}/bin`,
++				pathAppend: undefined,
++				pathRemovePattern: 'ballerina'
++			}
++		);
++	});
++});
