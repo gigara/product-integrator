@@ -14,6 +14,12 @@ that brings together Ballerina language runtime, WSO2 Integration Control Plane,
 and low-code editor in one unified package.
 
 %global debug_package %{nil}
+# Ship prebuilt Electron/Ballerina/JRE binaries as-is. Disable rpm's automatic
+# post-install processing (brp-strip/brp-compress/brp-elfperms): brp-strip runs
+# /usr/bin/strip over every bundled ELF and exits non-zero on the arm64 binaries
+# (e.g. @microsoft/mxc-sdk/bin/arm64/*) when built on an x86_64 host, which aborts
+# %install. We never want these vendored binaries stripped or altered anyway.
+%global __os_install_post %{nil}
 %prep
 %setup -q -c
 
