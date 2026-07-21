@@ -151,16 +151,79 @@ mv "$ICP_UNZIPPED_PATH"/* "$ICP_TARGET"
 rm -rf "$ICP_UNZIPPED_PATH"
 chmod +x "$ICP_TARGET/bin"/*
 
-# Modify icp.sh to use the JRE from shared dependencies directory
+# Make icp.sh resolve the JVM env-aware (§D8): prefer the relocated JRE dir advertised by the
+# product runtime environment (WSO2_INTEGRATOR_JRE_DIR — set once ICP/JRE are seeded to the data
+# folder), else fall back to the JRE bundled next to ICP (../../dependencies). Replace icp's bare
+# `java` calls with $WSO2_ICP_JAVA, then prepend a resolver that sets it (added AFTER the replace
+# so its own `bin/java` isn't itself rewritten). Backward-compatible: with the env var unset it
+# resolves to exactly the previous relative path.
 ICP_SCRIPT="$ICP_TARGET/bin/icp.sh"
 if [ -f "$ICP_SCRIPT" ]; then
-    print_info "Modifying icp.sh to use JRE from dependencies ($JRE_FOLDER)"
-    # Replace standalone 'java' invocations with the full path to the JRE java (word-boundary match)
-    sed -i '' -E "s|[[:<:]]java[[:>:]]|\"\$SCRIPT_DIR\"/../../dependencies/$JRE_FOLDER/bin/java|g" "$ICP_SCRIPT"
+    print_info "Modifying icp.sh to use JRE (env-aware, fallback $JRE_FOLDER)"
+    sed -i '' -E "s|[[:<:]]java[[:>:]]|\"\$WSO2_ICP_JAVA\"|g" "$ICP_SCRIPT"
+    ICP_TMP="$(mktemp)"
+    {
+        head -n 1 "$ICP_SCRIPT"
+        cat <<EOF
+WSO2_ICP_JAVA=""
+_wso2_icp_sd="\$(cd "\$(dirname "\$0")" && pwd)"
+if [ -n "\$WSO2_INTEGRATOR_JRE_HOME" ] && [ -x "\$WSO2_INTEGRATOR_JRE_HOME/bin/java" ]; then
+  WSO2_ICP_JAVA="\$WSO2_INTEGRATOR_JRE_HOME/bin/java"
+else
+  WSO2_ICP_JAVA="\$_wso2_icp_sd/../../dependencies/$JRE_FOLDER/bin/java"
+fi
+EOF
+        tail -n +2 "$ICP_SCRIPT"
+    } > "$ICP_TMP"
+    mv "$ICP_TMP" "$ICP_SCRIPT"
+    chmod +x "$ICP_SCRIPT"
 fi
 
 # Fix ZIP epoch timestamps — unzip preserves 1980-01-01 dates from ZIP archives
 find "$WSO2_TARGET/WSO2 Integrator.app" -exec touch {} +
+
+# -------------------------------------------------------------------
+# Code-sign a fully-assembled app bundle (Developer ID + hardened runtime), inside-out:
+# loose Mach-O + component executables, then nested bundles deepest-first, then the top
+# app. Falls back to ad-hoc signing when no identity is configured (local/dev builds) so
+# the app still launches. Reused for the full app and the stripped editor-only update
+# bundle (§D8) — stripping files breaks the seal, so the editor-only copy is re-signed.
+# -------------------------------------------------------------------
+ENTITLEMENTS="$WORK_DIR/entitlements.plist"
+sign_app_bundle() {
+    local app="$1"
+    if [ -n "${MAC_SIGNING_IDENTITY:-}" ]; then
+        print_info "Signing app with Developer ID identity: $MAC_SIGNING_IDENTITY ($app)"
+        local SIGN_OPTS=(--force --timestamp --options runtime --entitlements "$ENTITLEMENTS" --sign "$MAC_SIGNING_IDENTITY")
+
+        # 1) Loose Mach-O content: libraries, native node addons, and executables inside the
+        #    bundled components (Ballerina/JVM/ICP). Sign these before the bundles that contain them.
+        find "$app" -type f \( -name "*.dylib" -o -name "*.so" -o -name "*.node" -o -name "*.jnilib" \) -print0 \
+            | while IFS= read -r -d '' f; do codesign "${SIGN_OPTS[@]}" "$f"; done
+        if [ -d "$app/Contents/components" ]; then
+            find "$app/Contents/components" -type f -perm +111 ! -name "*.jar" -print0 \
+                | while IFS= read -r -d '' f; do codesign "${SIGN_OPTS[@]}" "$f"; done
+        fi
+
+        # 2) Nested bundles (Electron frameworks + helper .apps), deepest path first.
+        find "$app" -type d \( -name "*.framework" -o -name "*.app" \) | awk '{ print length, $0 }' | sort -rn | cut -d' ' -f2- \
+            | while IFS= read -r bundle; do
+                [ "$bundle" = "$app" ] && continue
+                codesign "${SIGN_OPTS[@]}" "$bundle"
+              done
+
+        # 3) The top-level app last, then verify the seal.
+        codesign "${SIGN_OPTS[@]}" "$app"
+        codesign --verify --deep --strict --verbose=2 "$app"
+        print_info "App signed and verified: $app"
+    else
+        print_warning "MAC_SIGNING_IDENTITY not set — ad-hoc signing (not distributable or notarizable)"
+        codesign --force --deep --sign - "$app"
+    fi
+}
+
+SIGN_APP="$WSO2_TARGET/WSO2 Integrator.app"
+sign_app_bundle "$SIGN_APP"
 
 # Build the component package
 pkgbuild --root "$EXTRACTION_TARGET" \
@@ -309,6 +372,42 @@ if [ -f "$WORK_DIR/$DMG_NAME" ]; then
     print_info "Package size: $(du -h "$WORK_DIR/$DMG_NAME" | cut -f1)"
 else
     print_error "Failed to create DMG package"
+    exit 1
+fi
+
+# -------------------------------------------------------------------
+# Create the Squirrel.Mac auto-update payload: a zip of the SIGNED app.
+# Squirrel verifies that the Developer ID signature matches on update, so a
+# signed app zip is sufficient — it does not need to be notarized/stapled for
+# the update mechanism (the DMG covers first-install Gatekeeper). Built with
+# `ditto` to preserve symlinks and resource forks in the bundle.
+# -------------------------------------------------------------------
+MAC_ZIP="wso2-integrator-$VERSION-$ARCH-mac.zip"
+print_info "Creating Squirrel.Mac update payload: $MAC_ZIP"
+rm -f "$WORK_DIR/$MAC_ZIP"
+# INSTALLER_PROFILE=editor-update (§D8): the Squirrel update payload is EDITOR-ONLY — strip the
+# bundled Ballerina from a copy and re-sign it (the DMG/PKG first-install artifacts stay full).
+# After Squirrel swaps the app, the seeded Ballerina in ~/.wso2-integrator survives the swap.
+# Default (full) keeps the current behaviour for local/dev builds.
+ZIP_SRC="$SIGN_APP"
+if [ "${INSTALLER_PROFILE:-full}" = "editor-update" ]; then
+    # W-B: truly editor-only Squirrel payload — drop the entire components tree (Ballerina, ICP,
+    # JRE). All are seeded to ~/.wso2-integrator and survive the whole-.app swap; ICP requires the
+    # MI extension to read WSO2_INTEGRATOR_ICP_HOME before this payload is published (go-live gate).
+    print_info "editor-update profile: building editor-only Squirrel payload (runtimes relocated)"
+    EDITOR_APP="$WORK_DIR/editor_update/WSO2 Integrator.app"
+    rm -rf "$WORK_DIR/editor_update"
+    mkdir -p "$WORK_DIR/editor_update"
+    ditto "$SIGN_APP" "$EDITOR_APP"
+    rm -rf "$EDITOR_APP/Contents/components"
+    sign_app_bundle "$EDITOR_APP"
+    ZIP_SRC="$EDITOR_APP"
+fi
+ditto -c -k --sequesterRsrc --keepParent "$ZIP_SRC" "$WORK_DIR/$MAC_ZIP"
+if [ -f "$WORK_DIR/$MAC_ZIP" ]; then
+    print_info "Successfully created: $MAC_ZIP ($(du -h "$WORK_DIR/$MAC_ZIP" | cut -f1))"
+else
+    print_error "Failed to create Squirrel.Mac update zip"
     exit 1
 fi
 
