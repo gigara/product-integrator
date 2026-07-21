@@ -45,8 +45,8 @@ Index: product-integrator/lib/vscode/src/main.ts
 +					const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 +					const components = manifest?.components;
 +					if (components && typeof components === 'object') {
-+						for (const [id, entry] of Object.entries<any>(components)) {
-+							const activePath = entry?.active?.path;
++						for (const [id, entry] of Object.entries(components as { [id: string]: { active?: { path?: string } } })) {
++							const activePath = entry.active?.path;
 +							if (typeof activePath === 'string' && activePath.length > 0) {
 +								overrides[id] = path.normalize(path.isAbsolute(activePath) ? activePath : path.join(dataFolderHome, activePath));
 +							}
@@ -395,7 +395,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +import { spawn } from 'child_process';
 +import * as fs from 'fs';
 +import * as os from 'os';
-+import * as path from 'path';
++import * as path from '../../../base/common/path.js';
 +import { shell } from 'electron';
 +import { Emitter } from '../../../base/common/event.js';
 +import { Disposable, DisposableStore } from '../../../base/common/lifecycle.js';
@@ -1233,7 +1233,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2Compone
 + *--------------------------------------------------------------------------------------------*/
 +
 +import * as fs from 'fs';
-+import * as path from 'path';
++import * as path from '../../../base/common/path.js';
 +
 +/**
 + * Local components manifest bookkeeping. This module intentionally depends only on
@@ -1577,7 +1577,7 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser/wso2Update.contribution.ts
-@@ -0,0 +1,431 @@
+@@ -0,0 +1,435 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Microsoft Corporation. All rights reserved.
 + *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -1723,7 +1723,11 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +		});
 +	}
 +	async run(accessor: ServicesAccessor): Promise<void> {
++		// Resolve every service synchronously — the accessor is only valid before the first
++		// await (local/code-no-accessor-after-await).
 +		const updateService = accessor.get(IWso2ComponentUpdateService);
++		const dialogService = accessor.get(IDialogService);
++		const notificationService = accessor.get(INotificationService);
 +		const state = await updateService.getState();
 +		if (state.type !== Wso2UpdateStateType.UpdatesAvailable) {
 +			return;
@@ -1733,7 +1737,7 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +		if (state.updates.length) {
 +			await updateService.downloadUpdates();
 +		} else if (state.appUpdate) {
-+			await applyAppUpdate(updateService, accessor.get(IDialogService), accessor.get(INotificationService), state.appUpdate.version);
++			await applyAppUpdate(updateService, dialogService, notificationService, state.appUpdate.version);
 +		}
 +	}
 +}
@@ -2344,3 +2348,18 @@ Index: product-integrator/lib/vscode/src/vs/workbench/electron-browser/parts/dia
  }
  
  registerWorkbenchContribution2(
+Index: product-integrator/lib/vscode/build/lib/i18n.resources.json
+===================================================================
+--- product-integrator.orig/lib/vscode/build/lib/i18n.resources.json
++++ product-integrator/lib/vscode/build/lib/i18n.resources.json
+@@ -627,6 +627,10 @@
+ 			"project": "vscode-workbench"
+ 		},
+ 		{
++			"name": "vs/workbench/contrib/wso2Update",
++			"project": "vscode-workbench"
++		},
++		{
+ 			"name": "vs/workbench/services/accounts",
+ 			"project": "vscode-workbench"
+ 		},
