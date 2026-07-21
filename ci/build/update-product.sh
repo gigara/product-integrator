@@ -25,6 +25,30 @@ WSO2_HURL_CLIENT_EXTENSION_VERSION=$(read_version "wso2.hurl-client.extension.ve
 WSO2_MCP_SERVER_INSPECTOR_EXTENSION_VERSION=$(read_version "wso2.mcp-server-inspector.extension.version")
 WSO2_STREAMING_INTEGRATOR_EXTENSION_VERSION=$(read_version "wso2.streaming-integrator.extension.version")
 
+# Bundled component versions (Ballerina runtime, custom JRE, ICP) — surfaced in
+# product.json so the in-app updater and Components UI can compare the bundled
+# baseline against installed overrides.
+BALLERINA_RUNTIME_VERSION=$(read_version "ballerina.version")
+BALLERINA_JRE_VERSION=$(read_version "ballerina.jre.version")
+ICP_VERSION=$(read_version "icp.version")
+
+# Base URL of the WSO2-hosted update server. Left empty by default so the in-app
+# component updater stays disabled until a live update server is provisioned; set
+# WSO2_UPDATE_URL (e.g. https://updates.wso2.com/integrator) to enable checks.
+WSO2_UPDATE_URL=${WSO2_UPDATE_URL:-""}
+
+# Base64-encoded PEM public key that verifies the update manifest's cosign signature.
+# Empty by default → manifest signature verification is skipped (relies on TLS + host
+# allowlist + per-artifact sha256). Set WSO2_UPDATE_PUBLIC_KEY to `base64 < cosign.pub`
+# to enforce signature verification.
+WSO2_UPDATE_PUBLIC_KEY=${WSO2_UPDATE_PUBLIC_KEY:-""}
+
+# Stock VS Code update feed (Squirrel.Mac via darwinUpdateService). Set STOCK_UPDATE_URL
+# ONLY for macOS builds — enabling it also activates the win32/linux stock update paths,
+# which do not fit our MSI/DEB packaging. Empty → stock update service stays disabled.
+STOCK_UPDATE_URL=${STOCK_UPDATE_URL:-""}
+DARWIN_UNIVERSAL_ASSET_ID=${DARWIN_UNIVERSAL_ASSET_ID:-""}
+
 require_non_empty() {
   local value="$1"
   local key="$2"
@@ -177,28 +201,42 @@ fi)
         "version": "${WI_EXTENSION_VERSION}"
       }
     ],
+    "wso2UpdateUrl": "${WSO2_UPDATE_URL}",
+    "wso2UpdatePublicKey": "${WSO2_UPDATE_PUBLIC_KEY}",
+    "updateUrl": "${STOCK_UPDATE_URL}",
+    "darwinUniversalAssetId": "${DARWIN_UNIVERSAL_ASSET_ID}",
+    "bundledComponents": {
+      "ballerina-runtime": "${BALLERINA_RUNTIME_VERSION}",
+      "jre": "${BALLERINA_JRE_VERSION}",
+      "icp": "${ICP_VERSION}"
+    },
     "runtimeEnv": {
       "common": {
         "WSO2_INTEGRATOR_RUNTIME": "true",
-        "WSO2_INTEGRATOR_VERSION": "${VERSION}",
         "__meta": {
           "pathRemovePattern": "ballerina"
         }
       },
       "darwin": {
-        "BALLERINA_HOME": "\${APP_ROOT}/Contents/components/ballerina",
-        "WSO2_INTEGRATOR_BALLERINA_HOME": "\${APP_ROOT}/Contents/components/ballerina",
-        "PATH": "\${APP_ROOT}/Contents/components/ballerina/bin"
+        "BALLERINA_HOME": "\${COMPONENT:ballerina-runtime|\$APP_ROOT/Contents/components/ballerina}",
+        "WSO2_INTEGRATOR_BALLERINA_HOME": "\${COMPONENT:ballerina-runtime|\$APP_ROOT/Contents/components/ballerina}",
+        "PATH": "\${COMPONENT:ballerina-runtime|\$APP_ROOT/Contents/components/ballerina}/bin",
+        "WSO2_INTEGRATOR_ICP_HOME": "\${COMPONENT:icp|\$APP_ROOT/Contents/components/icp}",
+        "WSO2_INTEGRATOR_JRE_DIR": "\${COMPONENT:jre|\$APP_ROOT/Contents/components/dependencies}"
       },
       "linux": {
-        "BALLERINA_HOME": "\${APP_ROOT}/components/ballerina",
-        "WSO2_INTEGRATOR_BALLERINA_HOME": "\${APP_ROOT}/components/ballerina",
-        "PATH": "\${APP_ROOT}/components/ballerina/bin"
+        "BALLERINA_HOME": "\${COMPONENT:ballerina-runtime|\$APP_ROOT/components/ballerina}",
+        "WSO2_INTEGRATOR_BALLERINA_HOME": "\${COMPONENT:ballerina-runtime|\$APP_ROOT/components/ballerina}",
+        "PATH": "\${COMPONENT:ballerina-runtime|\$APP_ROOT/components/ballerina}/bin",
+        "WSO2_INTEGRATOR_ICP_HOME": "\${COMPONENT:icp|\$APP_ROOT/components/icp}",
+        "WSO2_INTEGRATOR_JRE_DIR": "\${COMPONENT:jre|\$APP_ROOT/components/dependencies}"
       },
       "win32": {
-        "BALLERINA_HOME": "\${APP_ROOT}\\\\components\\\\ballerina",
-        "WSO2_INTEGRATOR_BALLERINA_HOME": "\${APP_ROOT}\\\\components\\\\ballerina",
-        "PATH": "\${APP_ROOT}\\\\components\\\\ballerina\\\\bin"
+        "BALLERINA_HOME": "\${COMPONENT:ballerina-runtime|\$APP_ROOT\\\\components\\\\ballerina}",
+        "WSO2_INTEGRATOR_BALLERINA_HOME": "\${COMPONENT:ballerina-runtime|\$APP_ROOT\\\\components\\\\ballerina}",
+        "PATH": "\${COMPONENT:ballerina-runtime|\$APP_ROOT\\\\components\\\\ballerina}\\\\bin",
+        "WSO2_INTEGRATOR_ICP_HOME": "\${COMPONENT:icp|\$APP_ROOT\\\\components\\\\icp}",
+        "WSO2_INTEGRATOR_JRE_DIR": "\${COMPONENT:jre|\$APP_ROOT\\\\components\\\\dependencies}"
       }
     }
 }
