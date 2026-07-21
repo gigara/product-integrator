@@ -234,21 +234,22 @@ rpmbuild --define "_topdir $BUILD_DIR" \
 rm -rf "${INTEGRATOR_TARGET:?}"
 rm -rf "$EXTRACTION_TARGET"
 
-# Copy built RPM to current directory
+# Copy built RPM(s) from this run to the working directory.
+# The full and editor-update builds share the same Version-Release, so they would
+# produce identical filenames. Tag the editor-only build with -update as we copy so
+# it stays distinct from — and never clobbers — the full first-install RPM produced
+# by the earlier run (the package Version is unchanged, so it still upgrades a full
+# install cleanly). BUILD_DIR/RPMS is wiped at the start of each run, so RPMS_DIR
+# only ever holds the current build's RPM.
 print_info "Copying RPM package to current directory..."
-find "$RPMS_DIR" -name "*.rpm" -exec cp {} "$WORK_DIR/" \;
-
-# Editor-only build: tag the filename so it is distinct from the full first-install RPM
-# (the package Version is unchanged, so it still upgrades a full install cleanly).
+RPM_SUFFIX=""
 if [ "${INSTALLER_PROFILE:-full}" = "editor-update" ]; then
-    for r in "$WORK_DIR"/*.rpm; do
-        [ -f "$r" ] || continue
-        case "$r" in
-            *-update.rpm) ;;
-            *) mv "$r" "${r%.rpm}-update.rpm" ;;
-        esac
-    done
+    RPM_SUFFIX="-update"
 fi
+while IFS= read -r -d '' src; do
+    base=$(basename "$src")
+    cp "$src" "$WORK_DIR/${base%.rpm}${RPM_SUFFIX}.rpm"
+done < <(find "$RPMS_DIR" -name "*.rpm" -print0)
 
 # List built packages
 print_info "Built RPM packages:"
