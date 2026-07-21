@@ -55,6 +55,15 @@ on:
         options:
           - archive
           - github-release
+      channel:
+        description: 'Update channel to publish the manifest to (new builds land here first; promote later)'
+        required: true
+        default: 'insider'
+        type: choice
+        options:
+          - insider
+          - beta
+          - stable
 
 permissions:
   id-token: write
@@ -271,6 +280,19 @@ jobs:
 
       - name: Update product.json and branding
         working-directory: .
+        env:
+          # Component update mechanism (all platforms): the manifest server the client polls and
+          # the public key it verifies signed manifests with. Empty when unset → the in-app
+          # component updater stays disabled and manifest signature checks are skipped.
+          WSO2_UPDATE_URL: ${{ secrets.WSO2_UPDATE_URL }}
+          WSO2_UPDATE_PUBLIC_KEY: ${{ secrets.WSO2_UPDATE_PUBLIC_KEY }}
+          # macOS-only: enables the stock Squirrel.Mac update feed (darwinUpdateService), served
+          # from the SAME base host as the component manifest — the stock feed just lives under a
+          # different path (/api/update/darwin/...). Only the macOS job sets this field, so
+          # Windows/Linux stock update paths stay off. Empty when unset → stock updates disabled.
+          # Precondition: that Squirrel endpoint must exist and return 200/204 (else mac errors on
+          # each check); until it does, leave WSO2_UPDATE_URL unset or the endpoint returning 204.
+          STOCK_UPDATE_URL: ${{ secrets.WSO2_UPDATE_URL }}
         run: |
           chmod +x ./ci/build/update-product.sh
           ./ci/build/update-product.sh "${{ needs.resolve-versions.outputs.integrator_version }}"
@@ -413,8 +435,32 @@ jobs:
           mkdir -p ../artifacts
           (cd .. && zip -qry "artifacts/VSCode-darwin-${{ matrix.arch }}.zip" VSCode-darwin-${{ matrix.arch }})
           cp ../artifacts/VSCode-darwin-${{ matrix.arch }}.zip ../../installers/mac/
+      - name: Import Developer ID certificate (macOS)
+        if: ${{ github.event.inputs.build_packed_installers == 'true' }}
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE_P12" ]; then
+            echo "APPLE_CERTIFICATE_P12 not set — skipping import; build.sh will ad-hoc sign (not distributable)."
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/wso2-signing.keychain-db"
+          KC_PASS="ci-$RANDOM-$RANDOM-$RANDOM"
+          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/developer_id.p12"
+          security create-keychain -p "$KC_PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KC_PASS" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/developer_id.p12" -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PASS" "$KEYCHAIN"
+          rm -f "$RUNNER_TEMP/developer_id.p12"
+          echo "Imported Developer ID certificate into $KEYCHAIN"
+
       - name: Build macOS installer packages
         if: ${{ github.event.inputs.build_packed_installers == 'true' }}
+        env:
+          MAC_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           cd ../..
           ROOT_DIR=$(pwd)
@@ -442,8 +488,40 @@ jobs:
           wget -O ballerina.zip "$BALLERINA_URL"
           wget -O icp.zip "$ICP_URL"
           wget -O jre.zip "$JRE_URL"
-          ./build.sh ballerina.zip $BALLERINA_VERSION VSCode-darwin-${{ matrix.arch }}.zip icp.zip jre.zip $INTEGRATOR_VERSION ${{ matrix.arch }}
+          # editor-update profile: full DMG/PKG (first install) + EDITOR-ONLY Squirrel zip (§D8).
+          INSTALLER_PROFILE=editor-update ./build.sh ballerina.zip $BALLERINA_VERSION VSCode-darwin-${{ matrix.arch }}.zip icp.zip jre.zip $INTEGRATOR_VERSION ${{ matrix.arch }}
           cd ${ROOT_DIR}
+
+      - name: Notarize and staple (macOS ${{ matrix.arch }})
+        if: ${{ github.event.inputs.build_packed_installers == 'true' }}
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          V="${{ needs.resolve-versions.outputs.integrator_version }}"
+          DMG="installers/mac/wso2-integrator-${V}-${{ matrix.arch }}.dmg"
+          PKG="installers/mac/wso2-integrator-${V}-${{ matrix.arch }}.pkg"
+          if [ -z "$APPLE_API_KEY_P8" ] || [ -z "$APPLE_API_KEY_ID" ] || [ -z "$APPLE_API_ISSUER_ID" ]; then
+            echo "Notarization credentials not set — skipping notarization (build is signed but not notarized)."
+            exit 0
+          fi
+          echo "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary_key.p8"
+          for ARTIFACT in "$DMG" "$PKG"; do
+            [ -f "$ARTIFACT" ] || continue
+            echo "Notarizing $ARTIFACT"
+            xcrun notarytool submit "$ARTIFACT" \
+              --key "$RUNNER_TEMP/notary_key.p8" \
+              --key-id "$APPLE_API_KEY_ID" \
+              --issuer "$APPLE_API_ISSUER_ID" \
+              --wait
+            xcrun stapler staple "$ARTIFACT"
+          done
+          rm -f "$RUNNER_TEMP/notary_key.p8"
+
+          # Alternative (Apple ID) if not using an API key — configure instead of the block above:
+          #   xcrun notarytool submit "$ARTIFACT" --apple-id "$APPLE_ID" \
+          #     --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
 
       - name: Login to AWS
         uses: aws-actions/configure-aws-credentials@v5
@@ -458,7 +536,27 @@ jobs:
         run: |
           S3_PATH="s3://${{ secrets.AWS_S3_BUCKET }}/wi/${{ github.run_id }}/"
           aws s3 cp installers/mac/ "${S3_PATH}" --recursive --exclude "*" --include "*.dmg"
-      
+
+      - name: Publish Squirrel.Mac update payload to update bucket
+        if: ${{ github.event.inputs.build_packed_installers == 'true' }}
+        working-directory: .
+        run: |
+          V="${{ needs.resolve-versions.outputs.integrator_version }}"
+          ZIP="installers/mac/wso2-integrator-${V}-${{ matrix.arch }}-mac.zip"
+          if [ ! -f "$ZIP" ]; then
+            echo "Squirrel.Mac payload not found at $ZIP" >&2
+            exit 1
+          fi
+          if [ -z "${{ secrets.AWS_UPDATE_S3_BUCKET }}" ]; then
+            echo "AWS_UPDATE_S3_BUCKET not set — skipping Squirrel.Mac payload upload."
+            exit 0
+          fi
+          DEST="s3://${{ secrets.AWS_UPDATE_S3_BUCKET }}/updates/darwin/${{ matrix.arch }}/"
+          # Versioned copy (referenced by the feed) plus a stable "latest" alias.
+          aws s3 cp "$ZIP" "${DEST}wso2-integrator-${V}-${{ matrix.arch }}-mac.zip" --content-type application/zip --cache-control no-cache
+          aws s3 cp "$ZIP" "${DEST}wso2-integrator-latest-mac.zip" --content-type application/zip --cache-control no-cache
+          echo "Published Squirrel.Mac payload for darwin/${{ matrix.arch }} (v${V})"
+
       - name: Upload macOS DMG artifacts
         if: ${{ github.event.inputs.build_packed_installers == 'true' }}
         uses: actions/upload-artifact@v4
@@ -629,6 +727,12 @@ jobs:
       - name: Update product.json and branding
         shell: bash
         working-directory: .
+        env:
+          # Component update mechanism (manifest server + verification key). Empty when unset →
+          # in-app component updates disabled. STOCK_UPDATE_URL is intentionally NOT set here so
+          # the stock (Squirrel/Win/Linux) update path stays off outside the macOS job.
+          WSO2_UPDATE_URL: ${{ secrets.WSO2_UPDATE_URL }}
+          WSO2_UPDATE_PUBLIC_KEY: ${{ secrets.WSO2_UPDATE_PUBLIC_KEY }}
         run: |
           chmod +x ./ci/build/update-product.sh
           ./ci/build/update-product.sh "${{ needs.resolve-versions.outputs.integrator_version }}"
@@ -812,7 +916,16 @@ jobs:
           Invoke-WebRequest -Uri $BALLERINA_URL -OutFile "ballerina.zip"
           Invoke-WebRequest -Uri $ICP_URL -OutFile "icp.zip"
           Invoke-WebRequest -Uri $JRE_URL -OutFile "jre.zip"
+          # Full first-install MSI (editor + Ballerina + ICP + JRE) -> wso2-integrator-<v>.msi
+          $env:INSTALLER_PROFILE = "full"
           .\build.bat .\ballerina.zip $BALLERINA_VERSION .\VSCode-win32-x64.zip .\icp.zip .\jre.zip $INTEGRATOR_VERSION
+          if ($LASTEXITCODE -ne 0) { throw "full MSI build failed" }
+          # Editor-only update MSI (§D8) -> wso2-integrator-<v>-update.msi. Ballerina is dropped;
+          # the client seeds/resolves it from the per-user data folder so the upgrade can't strand it.
+          $env:INSTALLER_PROFILE = "editor-update"
+          .\build.bat .\ballerina.zip $BALLERINA_VERSION .\VSCode-win32-x64.zip .\icp.zip .\jre.zip $INTEGRATOR_VERSION
+          if ($LASTEXITCODE -ne 0) { throw "editor-update MSI build failed" }
+          Remove-Item Env:\INSTALLER_PROFILE
 
       - name: Login to AWS
         uses: aws-actions/configure-aws-credentials@v5
@@ -841,23 +954,36 @@ jobs:
       - name: cosign-installer
         if: ${{ github.event.inputs.build_packed_installers == 'true' }}
         uses: sigstore/cosign-installer@v3.5.0
-      - name: Sign the msi installer
+      - name: Sign the msi installers
         if: ${{ github.event.inputs.build_packed_installers == 'true' }}
         run: |
           cd ../..
-          cosign sign-blob installers\windows\WixPackage\bin\x64\Release\en-US\wso2-integrator-${{ needs.resolve-versions.outputs.integrator_version }}.msi --output-certificate installers\windows\wso2-integrator-${{ needs.resolve-versions.outputs.integrator_version }}.msi.pem --output-signature installers\windows\wso2-integrator-${{ needs.resolve-versions.outputs.integrator_version }}.msi.sig --yes
-      - name: Verify signature of the msi installer
+          $V = "${{ needs.resolve-versions.outputs.integrator_version }}"
+          foreach ($name in @("wso2-integrator-$V", "wso2-integrator-$V-update")) {
+            $msi = "installers\windows\WixPackage\bin\x64\Release\en-US\$name.msi"
+            cosign sign-blob $msi --output-certificate "installers\windows\$name.msi.pem" --output-signature "installers\windows\$name.msi.sig" --yes
+            if ($LASTEXITCODE -ne 0) { throw "cosign sign-blob failed for $name.msi" }
+          }
+      - name: Verify signatures of the msi installers
         if: ${{ github.event.inputs.build_packed_installers == 'true' }}
         run: |
           cd ../..
-          cosign verify-blob installers\windows\WixPackage\bin\x64\Release\en-US\wso2-integrator-${{ needs.resolve-versions.outputs.integrator_version }}.msi --certificate installers\windows\wso2-integrator-${{ needs.resolve-versions.outputs.integrator_version }}.msi.pem --signature installers\windows\wso2-integrator-${{ needs.resolve-versions.outputs.integrator_version }}.msi.sig --certificate-identity=https://github.com/wso2/product-integrator/.github/workflows/build-and-release.yml@${{ github.ref }} --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+          $V = "${{ needs.resolve-versions.outputs.integrator_version }}"
+          foreach ($name in @("wso2-integrator-$V", "wso2-integrator-$V-update")) {
+            $msi = "installers\windows\WixPackage\bin\x64\Release\en-US\$name.msi"
+            cosign verify-blob $msi --certificate "installers\windows\$name.msi.pem" --signature "installers\windows\$name.msi.sig" --certificate-identity=https://github.com/wso2/product-integrator/.github/workflows/build-and-release.yml@${{ github.ref }} --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+            if ($LASTEXITCODE -ne 0) { throw "cosign verify-blob failed for $name.msi" }
+          }
 
-          
-      - name: Generate Hashes for msi installer
+
+      - name: Generate Hashes for msi installers
         if: ${{ github.event.inputs.build_packed_installers == 'true' }}
         run: |
           cd ../..
-          openssl dgst -sha256 -out installers\windows\wso2-integrator-${{ needs.resolve-versions.outputs.integrator_version }}.msi.sha256 installers\windows\WixPackage\bin\x64\Release\en-US\wso2-integrator-${{ needs.resolve-versions.outputs.integrator_version }}.msi 
+          $V = "${{ needs.resolve-versions.outputs.integrator_version }}"
+          foreach ($name in @("wso2-integrator-$V", "wso2-integrator-$V-update")) {
+            openssl dgst -sha256 -out "installers\windows\$name.msi.sha256" "installers\windows\WixPackage\bin\x64\Release\en-US\$name.msi"
+          }
 
       - name: Upload Signatures and Hashes for msi installer
         if: ${{ github.event.inputs.build_packed_installers == 'true' }}
@@ -1019,6 +1145,111 @@ jobs:
           files: release-files/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-update-manifest:
+    name: Publish Update Manifest
+    runs-on: ubuntu-latest
+    needs: [resolve-versions, publish-github-release]
+    if: |
+      always() &&
+      (needs.publish-github-release.result == 'success') &&
+      (github.event.inputs.delivery_mode == 'github-release') &&
+      (github.event.inputs.build_packed_installers == 'true')
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: darwin, arch: arm64 }
+          - { platform: darwin, arch: x64 }
+          - { platform: win32, arch: x64 }
+          - { platform: linux, arch: x64 }
+    env:
+      # New builds publish to the channel chosen at dispatch (default insider); the
+      # promote-channel workflow later copies a manifest down the ladder (insider → beta → stable).
+      CHANNEL: ${{ github.event.inputs.channel || 'insider' }}
+      # Only publish a platform's manifest when that platform's build actually ran — otherwise the
+      # manifest would point clients at release assets that were never produced (CR #21).
+      PUBLISH: ${{ (matrix.platform == 'darwin' && github.event.inputs.build_macos == 'true') || (matrix.platform == 'win32' && github.event.inputs.build_windows == 'true') || (matrix.platform == 'linux' && github.event.inputs.build_linux == 'true') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Resolve installer URL
+        id: installer
+        if: ${{ env.PUBLISH == 'true' }}
+        shell: bash
+        run: |
+          V="${{ needs.resolve-versions.outputs.integrator_version }}"
+          case "${{ matrix.platform }}-${{ matrix.arch }}" in
+            darwin-arm64) FILE="wso2-integrator-${V}-arm64.dmg" ;;
+            darwin-x64)   FILE="wso2-integrator-${V}-x64.dmg" ;;
+            # Windows/Linux core-app updates use the small editor-only package (§D8), not the full first-install one.
+            win32-x64)    FILE="wso2-integrator-${V}-update.msi" ;;
+            linux-x64)    FILE="wso2-integrator_${V}_amd64-update.deb" ;;
+            *) echo "Unsupported platform/arch"; exit 1 ;;
+          esac
+          echo "url=https://github.com/${{ github.repository }}/releases/download/v${V}/${FILE}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate manifest
+        if: ${{ env.PUBLISH == 'true' }}
+        run: |
+          node ci/build/generate-update-manifest.mjs \
+            --channel "${CHANNEL}" \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}" \
+            --sequence "${{ github.run_number }}" \
+            --app-version "${{ needs.resolve-versions.outputs.integrator_version }}" \
+            --app-installer-url "${{ steps.installer.outputs.url }}" \
+            --out manifest.json
+          echo "----- manifest.json -----"
+          cat manifest.json
+
+      - name: cosign-installer
+        uses: sigstore/cosign-installer@v3.5.0
+
+      # Key-based (not keyless) signing: the client verifies the detached signature against
+      # the public key embedded in product.json (wso2UpdatePublicKey). COSIGN_PRIVATE_KEY /
+      # COSIGN_PASSWORD are repo secrets; the matching public key must be set as the
+      # WSO2_UPDATE_PUBLIC_KEY build input (base64 of cosign.pub) so the client can verify.
+      - name: Sign manifest
+        if: ${{ env.PUBLISH == 'true' }}
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          cosign sign-blob --key env://COSIGN_PRIVATE_KEY manifest.json --output-signature manifest.json.sig --yes
+
+      - name: Verify manifest signature
+        if: ${{ env.PUBLISH == 'true' }}
+        env:
+          COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
+        run: |
+          printf '%s' "$COSIGN_PUBLIC_KEY" > cosign.pub
+          cosign verify-blob --key cosign.pub --signature manifest.json.sig manifest.json
+          rm -f cosign.pub
+
+      - name: Login to AWS
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Upload manifest to update bucket
+        if: ${{ env.PUBLISH == 'true' }}
+        run: |
+          DEST="s3://${{ secrets.AWS_UPDATE_S3_BUCKET }}/api/v1/updates/${CHANNEL}/${{ matrix.platform }}/${{ matrix.arch }}/"
+          aws s3 cp manifest.json "${DEST}manifest.json" --content-type application/json --cache-control no-cache
+          aws s3 cp manifest.json.sig "${DEST}manifest.json.sig" --content-type text/plain --cache-control no-cache
+          echo "Published ${CHANNEL}/${{ matrix.platform }}/${{ matrix.arch }} manifest (sequence ${{ github.run_number }})"
 
   bump-version:
     name: Bump Integrator Version

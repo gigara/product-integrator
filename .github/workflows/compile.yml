@@ -277,6 +277,11 @@ jobs:
 
       - name: Update product.json and branding
         working-directory: .
+        env:
+          # Component update mechanism (manifest server + verification key). Empty when unset →
+          # in-app component updates disabled. Stock update feed stays off (STOCK_UPDATE_URL unset).
+          WSO2_UPDATE_URL: ${{ secrets.WSO2_UPDATE_URL }}
+          WSO2_UPDATE_PUBLIC_KEY: ${{ secrets.WSO2_UPDATE_PUBLIC_KEY }}
         run: |
           chmod +x ./ci/build/update-product.sh
           ./ci/build/update-product.sh "${{ needs.resolve-versions.outputs.integrator_version }}"
@@ -389,7 +394,10 @@ jobs:
           wget -O ballerina.zip "$BALLERINA_URL"
           wget -O icp.zip "$ICP_URL"
           wget -O jre.zip "$JRE_URL"
-          ./build.sh ballerina.zip $BALLERINA_VERSION vscode-linux-x64.tar.gz icp.zip jre.zip $INTEGRATOR_VERSION
+          # Full first-install .deb, then the small editor-only update .deb (§D8). The upload
+          # glob (*.deb) picks up both; the update manifest points at the -update.deb.
+          INSTALLER_PROFILE=full ./build.sh ballerina.zip $BALLERINA_VERSION vscode-linux-x64.tar.gz icp.zip jre.zip $INTEGRATOR_VERSION
+          INSTALLER_PROFILE=editor-update ./build.sh ballerina.zip $BALLERINA_VERSION vscode-linux-x64.tar.gz icp.zip jre.zip $INTEGRATOR_VERSION
           cd ${ROOT_DIR}
 
       - name: Upload Deb artifacts
@@ -424,7 +432,9 @@ jobs:
           wget -O ballerina.zip "$BALLERINA_URL"
           wget -O icp.zip "$ICP_URL"
           wget -O jre.zip "$JRE_URL"
-          ./build.sh ballerina.zip $BALLERINA_VERSION vscode-linux-x64.tar.gz icp.zip jre.zip $INTEGRATOR_VERSION
+          # Full first-install .rpm, then the small editor-only update .rpm (§D8).
+          INSTALLER_PROFILE=full ./build.sh ballerina.zip $BALLERINA_VERSION vscode-linux-x64.tar.gz icp.zip jre.zip $INTEGRATOR_VERSION
+          INSTALLER_PROFILE=editor-update ./build.sh ballerina.zip $BALLERINA_VERSION vscode-linux-x64.tar.gz icp.zip jre.zip $INTEGRATOR_VERSION
           cd ${ROOT_DIR}
       - name: Upload RPM artifacts
         if: ${{ inputs.build_packed_installers == true}}
@@ -457,7 +467,9 @@ jobs:
           wget -O ballerina.zip "$BALLERINA_URL"
           wget -O icp.zip "$ICP_URL"
           wget -O jre.zip "$JRE_URL"
-          ./build.sh ballerina.zip $BALLERINA_VERSION vscode-linux-x64.tar.gz icp.zip jre.zip $INTEGRATOR_VERSION
+          # Full first-install tarball, then the small editor-only update tarball (§D8).
+          INSTALLER_PROFILE=full ./build.sh ballerina.zip $BALLERINA_VERSION vscode-linux-x64.tar.gz icp.zip jre.zip $INTEGRATOR_VERSION
+          INSTALLER_PROFILE=editor-update ./build.sh ballerina.zip $BALLERINA_VERSION vscode-linux-x64.tar.gz icp.zip jre.zip $INTEGRATOR_VERSION
           cd ${ROOT_DIR}
       - name: Upload TAR artifacts
         if: ${{ inputs.build_packed_installers == true}}
@@ -483,8 +495,16 @@ jobs:
             RPM_RELEASE="1"
             RPM_VERSION="$INTEGRATOR_VERSION"
           fi
-          cosign sign-blob installers/linux-deb/wso2-integrator_${INTEGRATOR_VERSION}_amd64.deb --output-certificate installers/linux-deb/wso2-integrator_${INTEGRATOR_VERSION}_amd64.deb.pem --output-signature installers/linux-deb/wso2-integrator_${INTEGRATOR_VERSION}_amd64.deb.sig --yes
-          cosign sign-blob installers/linux-rpm/wso2-integrator-${RPM_VERSION}-${RPM_RELEASE}.x86_64.rpm --output-certificate installers/linux-rpm/wso2-integrator-${RPM_VERSION}-${RPM_RELEASE}.x86_64.rpm.pem --output-signature installers/linux-rpm/wso2-integrator-${RPM_VERSION}-${RPM_RELEASE}.x86_64.rpm.sig --yes
+          # Sign both the full first-install package and the editor-only "-update" package (§D8).
+          PKGS=(
+            "installers/linux-deb/wso2-integrator_${INTEGRATOR_VERSION}_amd64.deb"
+            "installers/linux-deb/wso2-integrator_${INTEGRATOR_VERSION}_amd64-update.deb"
+            "installers/linux-rpm/wso2-integrator-${RPM_VERSION}-${RPM_RELEASE}.x86_64.rpm"
+            "installers/linux-rpm/wso2-integrator-${RPM_VERSION}-${RPM_RELEASE}.x86_64-update.rpm"
+          )
+          for f in "${PKGS[@]}"; do
+            cosign sign-blob "$f" --output-certificate "$f.pem" --output-signature "$f.sig" --yes
+          done
       - name: Verify signature of the deb, rpm installers
         if: ${{ inputs.build_packed_installers == true}}
         run: |
@@ -497,8 +517,15 @@ jobs:
             RPM_RELEASE="1"
             RPM_VERSION="$INTEGRATOR_VERSION"
           fi
-          cosign verify-blob installers/linux-deb/wso2-integrator_${INTEGRATOR_VERSION}_amd64.deb --certificate installers/linux-deb/wso2-integrator_${INTEGRATOR_VERSION}_amd64.deb.pem --signature installers/linux-deb/wso2-integrator_${INTEGRATOR_VERSION}_amd64.deb.sig --certificate-identity=https://github.com/wso2/product-integrator/.github/workflows/compile.yml@${{ github.ref }} --certificate-oidc-issuer=https://token.actions.githubusercontent.com
-          cosign verify-blob installers/linux-rpm/wso2-integrator-${RPM_VERSION}-${RPM_RELEASE}.x86_64.rpm --certificate installers/linux-rpm/wso2-integrator-${RPM_VERSION}-${RPM_RELEASE}.x86_64.rpm.pem --signature installers/linux-rpm/wso2-integrator-${RPM_VERSION}-${RPM_RELEASE}.x86_64.rpm.sig --certificate-identity=https://github.com/wso2/product-integrator/.github/workflows/compile.yml@${{ github.ref }} --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+          PKGS=(
+            "installers/linux-deb/wso2-integrator_${INTEGRATOR_VERSION}_amd64.deb"
+            "installers/linux-deb/wso2-integrator_${INTEGRATOR_VERSION}_amd64-update.deb"
+            "installers/linux-rpm/wso2-integrator-${RPM_VERSION}-${RPM_RELEASE}.x86_64.rpm"
+            "installers/linux-rpm/wso2-integrator-${RPM_VERSION}-${RPM_RELEASE}.x86_64-update.rpm"
+          )
+          for f in "${PKGS[@]}"; do
+            cosign verify-blob "$f" --certificate "$f.pem" --signature "$f.sig" --certificate-identity=https://github.com/wso2/product-integrator/.github/workflows/compile.yml@${{ github.ref }} --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+          done
           
       - name: Generate Hashes for deb, rpm installers
         if: ${{ inputs.build_packed_installers == true}}
@@ -512,8 +539,15 @@ jobs:
             RPM_RELEASE="1"
             RPM_VERSION="$INTEGRATOR_VERSION"
           fi
-          openssl dgst -sha256 -out installers/linux-deb/wso2-integrator_${INTEGRATOR_VERSION}_amd64.deb.sha256 installers/linux-deb/wso2-integrator_${INTEGRATOR_VERSION}_amd64.deb
-          openssl dgst -sha256 -out installers/linux-rpm/wso2-integrator-${RPM_VERSION}-${RPM_RELEASE}.x86_64.rpm.sha256 installers/linux-rpm/wso2-integrator-${RPM_VERSION}-${RPM_RELEASE}.x86_64.rpm
+          PKGS=(
+            "installers/linux-deb/wso2-integrator_${INTEGRATOR_VERSION}_amd64.deb"
+            "installers/linux-deb/wso2-integrator_${INTEGRATOR_VERSION}_amd64-update.deb"
+            "installers/linux-rpm/wso2-integrator-${RPM_VERSION}-${RPM_RELEASE}.x86_64.rpm"
+            "installers/linux-rpm/wso2-integrator-${RPM_VERSION}-${RPM_RELEASE}.x86_64-update.rpm"
+          )
+          for f in "${PKGS[@]}"; do
+            openssl dgst -sha256 -out "$f.sha256" "$f"
+          done
 
       - name: Upload Signatures and Hashes for deb installer
         if: ${{ inputs.build_packed_installers == true}}

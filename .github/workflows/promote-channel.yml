@@ -1,0 +1,94 @@
+name: Promote Update Channel
+
+# Promotes an already-published, signed update manifest down the channel ladder
+# (insider → beta → stable) by copying the manifest tree between channel prefixes in the
+# update bucket. The manifest bytes and their detached cosign signature are copied verbatim,
+# so the signature stays valid; the client resolves manifests by channel PATH and does not
+# validate the manifest's internal `channel` field, so no re-signing is needed.
+#
+# This is the manual-approval gate for promotion (a human dispatches it). For a hard gate on
+# stable, protect this workflow with a GitHub Environment that requires reviewers.
+on:
+  workflow_dispatch:
+    inputs:
+      from_channel:
+        description: 'Source channel to promote FROM'
+        required: true
+        default: 'insider'
+        type: choice
+        options:
+          - insider
+          - beta
+          - stable
+      to_channel:
+        description: 'Target channel to promote TO'
+        required: true
+        default: 'beta'
+        type: choice
+        options:
+          - insider
+          - beta
+          - stable
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  promote:
+    name: Promote ${{ github.event.inputs.from_channel }} to ${{ github.event.inputs.to_channel }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate promotion
+        run: |
+          FROM="${{ github.event.inputs.from_channel }}"
+          TO="${{ github.event.inputs.to_channel }}"
+          # Enforce the one-way ladder: insider → beta → stable. Any other pairing (skipping a
+          # rung, promoting backwards, or from == to) is rejected.
+          case "${FROM}->${TO}" in
+            "insider->beta"|"beta->stable") echo "Promoting ${FROM} -> ${TO}" ;;
+            *) echo "Only insider->beta and beta->stable promotions are allowed (got ${FROM} -> ${TO})"; exit 1 ;;
+          esac
+
+      - name: Login to AWS
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Guard - source sequence must be newer than target
+        run: |
+          set -uo pipefail
+          BUCKET="${{ secrets.AWS_UPDATE_S3_BUCKET }}"
+          FROM="${{ github.event.inputs.from_channel }}"
+          TO="${{ github.event.inputs.to_channel }}"
+          seq_of() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).sequence))}catch{}})'; }
+          fail=0
+          for pa in darwin/arm64 darwin/x64 win32/x64 linux/x64; do
+            src=$(aws s3 cp "s3://${BUCKET}/api/v1/updates/${FROM}/${pa}/manifest.json" - 2>/dev/null || true)
+            [ -z "$src" ] && continue   # nothing published for this platform in the source channel
+            src_seq=$(printf '%s' "$src" | seq_of)
+            dst=$(aws s3 cp "s3://${BUCKET}/api/v1/updates/${TO}/${pa}/manifest.json" - 2>/dev/null || true)
+            if [ -z "$dst" ]; then echo "${pa}: target empty (src seq ${src_seq}) - OK"; continue; fi
+            dst_seq=$(printf '%s' "$dst" | seq_of)
+            if [ -z "$src_seq" ] || [ -z "$dst_seq" ]; then echo "${pa}: unreadable sequence (src='${src_seq}' dst='${dst_seq}')"; fail=1; continue; fi
+            if [ "$src_seq" -le "$dst_seq" ]; then echo "${pa}: REFUSE - source seq ${src_seq} not newer than target ${dst_seq}"; fail=1; else echo "${pa}: OK (${src_seq} > ${dst_seq})"; fi
+          done
+          [ "$fail" -eq 0 ] || { echo "Promotion blocked: source is not strictly newer than target (would regress the channel)."; exit 1; }
+
+      - name: Copy signed manifests across channel prefixes
+        run: |
+          set -euo pipefail
+          SRC="s3://${{ secrets.AWS_UPDATE_S3_BUCKET }}/api/v1/updates/${{ github.event.inputs.from_channel }}/"
+          DST="s3://${{ secrets.AWS_UPDATE_S3_BUCKET }}/api/v1/updates/${{ github.event.inputs.to_channel }}/"
+          echo "Promoting ${SRC} -> ${DST}"
+          # The channel tree contains only manifest.json{,.sig,.pem} per {platform}/{arch}.
+          aws s3 cp "${SRC}" "${DST}" --recursive \
+            --exclude "*" \
+            --include "*/manifest.json" \
+            --include "*/manifest.json.sig" \
+            --include "*/manifest.json.pem"
+          echo "Promotion complete. Signature preserved (bytes copied verbatim); sequence is"
+          echo "monotonic via the source build's run_number, so clients on ${{ github.event.inputs.to_channel }} accept it"
+          echo "only if it is newer than their last-seen sequence (downgrade protection intact)."
