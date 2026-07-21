@@ -584,7 +584,7 @@ jobs:
         if: ${{ github.event.inputs.build_packed_installers == 'true' }}
         run: |
           cd ../..
-          cosign verify-blob installers/mac/wso2-integrator-${{ needs.resolve-versions.outputs.integrator_version }}-${{ matrix.arch }}.dmg --certificate installers/mac/wso2-integrator-${{ needs.resolve-versions.outputs.integrator_version }}-${{ matrix.arch }}.dmg.pem --signature installers/mac/wso2-integrator-${{ needs.resolve-versions.outputs.integrator_version }}-${{ matrix.arch }}.dmg.sig --certificate-identity=https://github.com/wso2/product-integrator/.github/workflows/build-and-release.yml@${{ github.ref }} --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+          cosign verify-blob installers/mac/wso2-integrator-${{ needs.resolve-versions.outputs.integrator_version }}-${{ matrix.arch }}.dmg --certificate installers/mac/wso2-integrator-${{ needs.resolve-versions.outputs.integrator_version }}-${{ matrix.arch }}.dmg.pem --signature installers/mac/wso2-integrator-${{ needs.resolve-versions.outputs.integrator_version }}-${{ matrix.arch }}.dmg.sig --certificate-identity=https://github.com/${{ github.repository }}/.github/workflows/build-and-release.yml@${{ github.ref }} --certificate-oidc-issuer=https://token.actions.githubusercontent.com
 
       - name: Generate Hashes for dmg installer
         if: ${{ github.event.inputs.build_packed_installers == 'true' }}
@@ -981,7 +981,7 @@ jobs:
           $V = "${{ needs.resolve-versions.outputs.integrator_version }}"
           foreach ($name in @("wso2-integrator-$V", "wso2-integrator-$V-update")) {
             $msi = "installers\windows\WixPackage\bin\x64\Release\en-US\$name.msi"
-            cosign verify-blob $msi --certificate "installers\windows\$name.msi.pem" --signature "installers\windows\$name.msi.sig" --certificate-identity=https://github.com/wso2/product-integrator/.github/workflows/build-and-release.yml@${{ github.ref }} --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+            cosign verify-blob $msi --certificate "installers\windows\$name.msi.pem" --signature "installers\windows\$name.msi.sig" --certificate-identity=https://github.com/${{ github.repository }}/.github/workflows/build-and-release.yml@${{ github.ref }} --certificate-oidc-issuer=https://token.actions.githubusercontent.com
             if ($LASTEXITCODE -ne 0) { throw "cosign verify-blob failed for $name.msi" }
           }
 

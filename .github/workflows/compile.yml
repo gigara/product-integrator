@@ -530,7 +530,7 @@ jobs:
             "installers/linux-rpm/wso2-integrator-${RPM_VERSION}-${RPM_RELEASE}.x86_64-update.rpm"
           )
           for f in "${PKGS[@]}"; do
-            cosign verify-blob "$f" --certificate "$f.pem" --signature "$f.sig" --certificate-identity=https://github.com/wso2/product-integrator/.github/workflows/compile.yml@${{ github.ref }} --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+            cosign verify-blob "$f" --certificate "$f.pem" --signature "$f.sig" --certificate-identity=https://github.com/${{ github.repository }}/.github/workflows/compile.yml@${{ github.ref }} --certificate-oidc-issuer=https://token.actions.githubusercontent.com
           done
           
       - name: Generate Hashes for deb, rpm installers

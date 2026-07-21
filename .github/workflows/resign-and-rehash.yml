@@ -79,7 +79,7 @@ jobs:
             cosign verify-blob "$dmg" \
               --certificate "${base}.dmg.pem" \
               --signature "${base}.dmg.sig" \
-              --certificate-identity="https://github.com/wso2/product-integrator/.github/workflows/resign-and-rehash.yml@${{ github.ref }}" \
+              --certificate-identity="https://github.com/${{ github.repository }}/.github/workflows/resign-and-rehash.yml@${{ github.ref }}" \
               --certificate-oidc-issuer=https://token.actions.githubusercontent.com
           done
 
@@ -151,7 +151,7 @@ jobs:
             cosign verify-blob "$msi" \
               --certificate "${base}.msi.pem" \
               --signature "${base}.msi.sig" \
-              --certificate-identity="https://github.com/wso2/product-integrator/.github/workflows/resign-and-rehash.yml@${{ github.ref }}" \
+              --certificate-identity="https://github.com/${{ github.repository }}/.github/workflows/resign-and-rehash.yml@${{ github.ref }}" \
               --certificate-oidc-issuer=https://token.actions.githubusercontent.com
           done
 
