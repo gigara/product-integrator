@@ -45,7 +45,16 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM Extract ballerina.zip
+REM INSTALLER_PROFILE (env): "full" (default) ships the editor + all runtimes; "editor-update"
+REM produces the small editor-only update MSI (§D8) by skipping the Ballerina runtime — the
+REM client seeds/resolves Ballerina from the per-user data folder, so an editor-only major
+REM upgrade never strands it. The WiX payload glob (.\payload\Integrator\**) naturally excludes
+REM whatever is not extracted here.
+if not defined INSTALLER_PROFILE set "INSTALLER_PROFILE=full"
+echo Installer profile: %INSTALLER_PROFILE%
+
+REM Extract ballerina.zip (skipped for the editor-update profile)
+if /i "%INSTALLER_PROFILE%"=="editor-update" goto :after_ballerina_extract
 echo Extracting Ballerina to payload
 REM Extract distributions directory (actual Ballerina runtime) to components\ballerina
 REM and remove docs/examples to reduce installer size
@@ -54,9 +63,15 @@ if errorlevel 1 (
     echo Ballerina extraction failed
     exit /b 1
 )
+:after_ballerina_extract
 
 REM Prune choreo-cli to win32/amd64 and linux/amd64 (WSL) only
 powershell -nologo -noprofile -command "& { $choreoCliDir = '.\WixPackage\payload\Integrator\resources\app\extensions\wso2.wso2-integrator\resources\choreo-cli'; if (Test-Path $choreoCliDir) { Get-ChildItem $choreoCliDir -Directory | ForEach-Object { $vDir = $_.FullName; foreach ($target in @((Join-Path $vDir 'darwin'), (Join-Path $vDir 'linux\arm64'))) { if (Test-Path $target) { try { Remove-Item $target -Recurse -Force -ErrorAction Stop } catch [System.Management.Automation.ItemNotFoundException] { } catch { Write-Warning ('choreo-cli prune warning: ' + $_.Exception.Message) } } }; Write-Host ('Pruned choreo-cli in ' + $_.Name) } } else { Write-Host 'choreo-cli directory not found, skipping prune' } }"
+
+REM editor-update (§D8 / W-B): the small update MSI is truly editor-only — skip ICP + JRE too
+REM (in addition to Ballerina). The client seeds them to the data folder; ICP requires the MI
+REM extension to read WSO2_INTEGRATOR_ICP_HOME before this build is published (go-live gate).
+if /i "%INSTALLER_PROFILE%"=="editor-update" goto :after_runtimes
 
 @REM REM Extract ICP.zip
 powershell -nologo -noprofile -command "& { Add-Type -A 'System.IO.Compression.FileSystem'; [IO.Compression.ZipFile]::ExtractToDirectory('%~4', '.\temp_icp'); $icpDir = (Get-ChildItem '.\temp_icp' -Directory | Select-Object -First 1).FullName; $icpTarget = '.\WixPackage\payload\Integrator\components\icp'; New-Item -ItemType Directory -Force -Path $icpTarget | Out-Null; Copy-Item -Path \"$icpDir\*\" -Destination $icpTarget -Recurse -Force; Remove-Item -Recurse -Force '.\temp_icp' }"
@@ -76,12 +91,19 @@ if errorlevel 1 (
 REM Modify icp.bat to use the JRE from shared dependencies directory
 echo Modifying icp.bat to use JRE from dependencies
 if exist ".\WixPackage\payload\Integrator\components\icp\bin\icp.bat" (
-    powershell -nologo -noprofile -command "& { $icpScript = '.\WixPackage\payload\Integrator\components\icp\bin\icp.bat'; $jreDir = (Get-ChildItem '.\WixPackage\payload\Integrator\components\dependencies' -Directory -ErrorAction SilentlyContinue | Select-Object -First 1).Name; if ($jreDir) { $content = Get-Content $icpScript -Raw; $javaReplacement = '!SCRIPT_DIR!../../dependencies/' + $jreDir + '/bin/java'; $newContent = $content -replace '\bjava\b', $javaReplacement; Set-Content -Path $icpScript -Value $newContent -NoNewline; Write-Host \"Updated icp.bat to use JRE: $jreDir\" } else { Write-Host 'Warning: JRE folder not found in dependencies' } }"
+    REM Make icp.bat resolve the JVM env-aware (§D8): prefer WSO2_INTEGRATOR_JRE_HOME (set by
+    REM main.ts once ICP/JRE are seeded to the data folder), else the JRE bundled next to ICP.
+    REM Replace icp's bare `java` with %WSO2_ICP_JAVA%, then prepend an @-prefixed resolver line
+    REM (added AFTER the replace so its own `bin\java` is not itself rewritten). Backward-compatible.
+    powershell -nologo -noprofile -command "& { $icpScript = '.\WixPackage\payload\Integrator\components\icp\bin\icp.bat'; $jreDir = (Get-ChildItem '.\WixPackage\payload\Integrator\components\dependencies' -Directory -ErrorAction SilentlyContinue | Select-Object -First 1).Name; if ($jreDir) { $content = Get-Content $icpScript -Raw; $content = $content -replace '\bjava\b', '\"%%WSO2_ICP_JAVA%%\"'; $block = '@if defined WSO2_INTEGRATOR_JRE_HOME (set \"WSO2_ICP_JAVA=%%WSO2_INTEGRATOR_JRE_HOME%%\bin\java\") else (set \"WSO2_ICP_JAVA=%%~dp0..\..\dependencies\' + $jreDir + '\bin\java\")' + [Environment]::NewLine; Set-Content -Path $icpScript -Value ($block + $content) -NoNewline; Write-Host \"Updated icp.bat (env-aware JRE, fallback $jreDir)\" } else { Write-Host 'Warning: JRE folder not found in dependencies' } }"
 ) else (
     echo Warning: icp.bat not found in ICP bin directory
 )
+:after_runtimes
 
 REM Copy balscript/bal to ballerina bin directory and replace version placeholder
+REM (skipped for editor-update: there is no bundled Ballerina in that payload)
+if /i "%INSTALLER_PROFILE%"=="editor-update" goto :after_balbat
 set "BAL_SRC=%~dp0WixPackage\balscript\bal.bat"
 set "BAL_TARGET=.\WixPackage\payload\Integrator\components\ballerina\bin\bal.bat"
 if exist "%BAL_SRC%" (
@@ -91,11 +113,20 @@ if exist "%BAL_SRC%" (
 ) else (
     echo bal.bat not found at %BAL_SRC%
 )
+:after_balbat
 
 
 
-REM Extract numeric-only version for WiX ProductVersion (strip pre-release suffix like -m1, -beta1)
-for /f "delims=" %%v in ('powershell -nologo -noprofile -command "('%~6' -split '-')[0]"') do set "WIX_VERSION=%%v"
+REM Compute WiX ProductVersion. Windows Installer only compares the first THREE fields, so the
+REM 4-part integrator.version (a.b.c.d, e.g. 5.0.0.1) would not upgrade on a 4th-field bump.
+REM Fold the revision into the build field: a.b.(c*1000+d)  ->  5.0.0.1 becomes 5.0.1 (§D8).
+REM Constraint: c<=64 and d<=999 (build field max 65535). Pre-release suffixes (-m1) are stripped.
+for /f "delims=" %%v in ('powershell -nologo -noprofile -command "$p=(('%~6' -split '-')[0] -split '\.'); while($p.Count -lt 4){$p+='0'}; $a=[int]$p[0]; $b=[int]$p[1]; $c=[int]$p[2]; $d=[int]$p[3]; if($c -gt 64 -or $d -gt 999){[Console]::Error.WriteLine('ProductVersion fold out of range (need c<=64,d<=999): %~6'); exit 1}; '{0}.{1}.{2}' -f $a,$b,($c*1000+$d)"') do set "WIX_VERSION=%%v"
+if not defined WIX_VERSION (
+    echo ERROR: failed to compute WiX ProductVersion from %~6
+    exit /b 1
+)
+echo WiX ProductVersion: %WIX_VERSION%
 
 
 REM Update version in Package.wxs
@@ -149,11 +180,15 @@ if errorlevel 1 (
 popd
 subst %BUILD_DRIVE%: /D
 
-REM Rename MSI output to include version
+REM Rename MSI output to include version. The editor-update profile gets a "-update" suffix so
+REM the small editor-only MSI (published to the update manifest) is distinct from the full
+REM first-install MSI. Both share the same UpgradeCode, so -update cleanly upgrades a full install.
+set "MSI_SUFFIX="
+if /i "%INSTALLER_PROFILE%"=="editor-update" set "MSI_SUFFIX=-update"
 set "MSI_ORIG=WixPackage\bin\x64\Release\en-US\WSO2-Integrator.msi"
-set "MSI_NEW=WixPackage\bin\x64\Release\en-US\wso2-integrator-%~6.msi"
+set "MSI_NEW=WixPackage\bin\x64\Release\en-US\wso2-integrator-%~6%MSI_SUFFIX%.msi"
 if exist "%MSI_ORIG%" (
-    ren "%MSI_ORIG%" "wso2-integrator-%~6.msi"
+    ren "%MSI_ORIG%" "wso2-integrator-%~6%MSI_SUFFIX%.msi"
     echo Renamed MSI to %MSI_NEW%
 ) else (
     echo MSI file not found: %MSI_ORIG%
