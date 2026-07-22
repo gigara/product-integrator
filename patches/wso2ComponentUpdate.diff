@@ -1226,7 +1226,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2Compone
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2ComponentsManifest.ts
-@@ -0,0 +1,346 @@
+@@ -0,0 +1,356 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Microsoft Corporation. All rights reserved.
 + *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -1485,6 +1485,11 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2Compone
 + * Symlinks are skipped, and on Windows the execute bits are meaningless (harmless no-op).
 + */
 +export function ensureExecutablePermissions(root: string): void {
++	// Execute bits are meaningless on Windows; skip the (deep, potentially long-path)
++	// walk entirely there.
++	if (process.platform === 'win32') {
++		return;
++	}
 +	const walk = (dir: string): void => {
 +		let entries: fs.Dirent[];
 +		try {
@@ -1540,14 +1545,19 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2Compone
 +		}
 +		const staging = `${target}.seeding`;
 +		try {
-+			fs.rmSync(staging, { recursive: true, force: true });
++			// Windows MAX_PATH (260): the bundled Ballerina/JRE trees have deeply nested
++			// files whose destination paths exceed 260 chars. Node's fs.cpSync/rmSync throw
++			// (or truncate) on those without the \\?\ extended-length prefix, leaving the
++			// component only partially seeded (or not at all). The Windows Installer copies
++			// them fine because it uses long-path-aware native APIs; match that here.
++			fs.rmSync(path.toNamespacedPath(staging), { recursive: true, force: true });
 +			fs.mkdirSync(path.dirname(target), { recursive: true });
-+			fs.cpSync(srcDir, staging, { recursive: true });
++			fs.cpSync(path.toNamespacedPath(srcDir), path.toNamespacedPath(staging), { recursive: true });
 +			ensureExecutablePermissions(staging);
 +			fs.renameSync(staging, target);
 +			log?.(`Seeded ${id}@${version} from ${srcDir}`);
 +		} catch (err) {
-+			fs.rmSync(staging, { recursive: true, force: true });
++			fs.rmSync(path.toNamespacedPath(staging), { recursive: true, force: true });
 +			log?.(`Failed to seed ${id}@${version}: ${err}`);
 +		}
 +	}
