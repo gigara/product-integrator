@@ -11,7 +11,7 @@
     "minAutoUpdateFromVersion": "5.0.0.0",
     "installer": {
       "url": "https://github.com/gigara/product-integrator/releases/download/v5.0.0.2-test/wso2-integrator-5.0.0.1-update.msi",
-      "sha256": "ff93fe9575dfe4845054002c3d55a7ab28839f8c883a0acf5ea5120f7d8f8d77",
+      "sha256": "045e9e1e298b9fa997873df0af4e47f061d520611cb6f4818aca4cd7739081d3",
       "sizeBytes": 381636088,
       "signature": {
         "sigUrl": "https://github.com/gigara/product-integrator/releases/download/v5.0.0.2-test/wso2-integrator-5.0.0.1-update.msi.sig",
