@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "channel": "stable",
+  "platform": "win32",
+  "arch": "x64",
+  "sequence": 100,
+  "publishedAt": "2026-07-22T00:00:00Z",
+  "expiresAt": "2027-07-22T00:00:00Z",
+  "app": {
+    "version": "5.0.0.2",
+    "minAutoUpdateFromVersion": "5.0.0.0",
+    "installer": {
+      "url": "https://github.com/gigara/product-integrator/releases/download/v5.0.0.2-test/wso2-integrator-5.0.0.1-update.msi",
+      "sha256": "ff93fe9575dfe4845054002c3d55a7ab28839f8c883a0acf5ea5120f7d8f8d77",
+      "sizeBytes": 381636088,
+      "signature": {
+        "sigUrl": "https://github.com/gigara/product-integrator/releases/download/v5.0.0.2-test/wso2-integrator-5.0.0.1-update.msi.sig",
+        "certUrl": "https://github.com/gigara/product-integrator/releases/download/v5.0.0.2-test/wso2-integrator-5.0.0.1-update.msi.pem"
+      }
+    },
+    "releaseNotesUrl": "https://wso2.com/integration/",
+    "rollout": { "percentage": 100 }
+  },
+  "components": [
+    {
+      "id": "jre",
+      "kind": "runtime",
+      "version": "3.0.3",
+      "artifact": {
+        "url": "https://github.com/ballerina-platform/ballerina-custom-jre/releases/download/3.0.2/ballerina-jre-win-64-3.0.2.zip",
+        "sha256": "cf960b3cd5a6a6d663d9304f2fe961360c6fb391efd690cf6f0312495bdfb2a0",
+        "sizeBytes": 49036686,
+        "signature": {
+          "sigUrl": "https://github.com/ballerina-platform/ballerina-custom-jre/releases/download/3.0.2/ballerina-jre-win-64-3.0.2.zip.sig",
+          "certUrl": "https://github.com/ballerina-platform/ballerina-custom-jre/releases/download/3.0.2/ballerina-jre-win-64-3.0.2.zip.pem"
+        }
+      },
+      "requires": { "app": ">=5.0.0.0" },
+      "rollout": { "percentage": 100 }
+    }
+  ],
+  "recommendedSet": {
+    "name": "2026-07-win-test",
+    "members": {
+      "jre": "3.0.3"
+    }
+  }
+}
