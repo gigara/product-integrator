@@ -12,7 +12,7 @@
     "installer": {
       "url": "https://github.com/gigara/product-integrator/releases/download/v5.0.0.2/wso2-integrator-5.0.0.2-update.msi",
       "sha256": "77f6ed5eb9499bdc38c69282cb07bf350c6d993d125da4acae2fc25f578644fa",
-      "sizeBytes": 381636088,
+      "sizeBytes": 380312983,
       "signature": {
         "sigUrl": "https://github.com/gigara/product-integrator/releases/download/v5.0.0.2/wso2-integrator-5.0.0.2-update.msi.sig",
         "certUrl": "https://github.com/gigara/product-integrator/releases/download/v5.0.0.2/wso2-integrator-5.0.0.2-update.msi.pem"
