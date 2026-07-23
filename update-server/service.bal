@@ -22,6 +22,42 @@ service / on updateListener {
         return {status: "ok", 'service: "wso2-integrator-update-server"};
     }
 
+    // TEMPORARY diagnostic endpoint — reports what the server actually sees for the
+    // configured dataDir so a deployment mount/config mismatch can be pinpointed.
+    // Remove once the manifest is being served correctly.
+    resource function get debug/paths() returns json {
+        string cwd = "";
+        string|file:Error c = file:getCurrentDir();
+        if c is string {
+            cwd = c;
+        }
+        string manifestPath = "";
+        boolean manifestExists = false;
+        boolean dataDirExists = false;
+        string[] dataDirListing = [];
+        boolean absDataExists = false;
+        string[] absDataListing = [];
+        do {
+            manifestPath = check file:joinPath(dataDir, "api", "v1", "updates", "stable", "win32", "x64", "manifest.json");
+            manifestExists = check file:test(manifestPath, file:EXISTS);
+            dataDirExists = check file:test(dataDir, file:EXISTS);
+            if dataDirExists {
+                foreach file:MetaData e in check file:readDir(dataDir) {
+                    dataDirListing.push(e.absPath);
+                }
+            }
+            absDataExists = check file:test("/data", file:EXISTS);
+            if absDataExists {
+                foreach file:MetaData e in check file:readDir("/data") {
+                    absDataListing.push(e.absPath);
+                }
+            }
+        } on fail error e {
+            return {dataDir, cwd, manifestPath, manifestExists, dataDirExists, absDataExists, err: e.message()};
+        }
+        return {dataDir, cwd, manifestPath, manifestExists, dataDirExists, dataDirListing, absDataExists, absDataListing};
+    }
+
     // Lists the channels that currently have published content.
     resource function get api/v1/channels() returns http:Response {
         string[] available = [];
