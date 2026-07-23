@@ -1,0 +1,15 @@
+# Choreo component config for the update server (Dockerfile build).
+# Buildpack builds auto-detect the service port; Dockerfile builds must declare
+# the endpoint explicitly here. The Ballerina service listens on 9600 with base
+# path "/" (service / on updateListener), so /healthz and /api/v1/... are served
+# directly under the Choreo-generated public URL.
+schemaVersion: 1.2
+endpoints:
+  - name: update-server
+    displayName: WSO2 Integrator Update Server
+    service:
+      basePath: /
+      port: 9600
+    type: REST
+    networkVisibilities:
+      - Public
