@@ -77,7 +77,7 @@ Index: product-integrator/lib/vscode/src/main.ts
  						}
  					}
  				}
-@@ -320,9 +345,83 @@ async function startup(codeCachePath: st
+@@ -320,10 +345,127 @@ async function startup(codeCachePath: st
  			return overrides;
  		};
  
@@ -159,8 +159,52 @@ Index: product-integrator/lib/vscode/src/main.ts
 +			}
 +
  			storeProductRuntimeEnvironment(process.env, resolvedRuntimeEnv);
++
++			// Bridge the Ballerina extension's language-server JDK lookup (§D8). The extension
++			// resolves its JDK from `<ballerinaHome>/dependencies/<jdk-*>` and THROWS if that
++			// directory is missing (it only falls back to JAVA_HOME when the directory exists but has
++			// no jdk-*). The Ballerina distribution normally bundles its JDK there, but our build ships
++			// it as a separate `jre` component seeded to components/jre/<version> — so after seeding
++			// (or an editor-only app update that strips the install-tree runtimes) the seeded ballerina
++			// home has no `dependencies` dir and the extension fails to activate ("JDK not found in
++			// <ballerinaHome>/dependencies"). Bridge it with a directory junction (Windows) / symlink
++			// (posix) at <ballerinaHome>/dependencies -> the active JRE wrapper (whose jdk-* child the
++			// extension then finds; it resolves the link via realpathSync.native). Repoint a stale link
++			// (e.g. after a JRE component update) but never clobber a real directory.
++			try {
++				const ballerinaHome = process.env['BALLERINA_HOME'];
++				const jreDir = process.env['WSO2_INTEGRATOR_JRE_DIR'];
++				if (ballerinaHome && jreDir && fs.existsSync(ballerinaHome) && fs.existsSync(jreDir)) {
++					const depLink = path.join(ballerinaHome, 'dependencies');
++					const linkType = process.platform === 'win32' ? 'junction' : 'dir';
++					let stat: fs.Stats | undefined;
++					try {
++						stat = fs.lstatSync(depLink);
++					} catch {
++						stat = undefined;
++					}
++					const resolvesToJdk = (): boolean => {
++						try {
++							return fs.readdirSync(depLink).some(name => name.startsWith('jdk-'));
++						} catch {
++							return false;
++						}
++					};
++					if (!stat) {
++						fs.symlinkSync(jreDir, depLink, linkType);
++					} else if (stat.isSymbolicLink() && !resolvesToJdk()) {
++						// Our link, now stale/broken (JRE moved) — repoint it.
++						fs.rmSync(depLink, { recursive: true, force: true });
++						fs.symlinkSync(jreDir, depLink, linkType);
++					}
++					// A real directory (already contains the JDK, or third-party content) is left as-is.
++				}
++			} catch (err) {
++				console.warn('Failed to link Ballerina dependencies to active JRE:', err);
++			}
  		}
  	} catch (e) {
+ 		console.warn('Failed to inject product runtimeEnv:', e);
 Index: product-integrator/lib/vscode/src/vs/base/common/product.ts
 ===================================================================
 --- product-integrator.orig/lib/vscode/src/vs/base/common/product.ts
