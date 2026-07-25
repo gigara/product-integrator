@@ -393,7 +393,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/wso2ComponentUpdateService.ts
-@@ -0,0 +1,843 @@
+@@ -0,0 +1,865 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Microsoft Corporation. All rights reserved.
 + *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -882,6 +882,17 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		if (!this.isAllowedUrl(url)) {
 +			throw new Error(`Artifact host not allowed: ${url}`);
 +		}
++		// Reuse an already-downloaded file whose contents still match — e.g. from a previous update
++		// attempt — so a re-click doesn't re-fetch hundreds of MB. The sha256 comparison guards
++		// against a truncated or corrupt prior download (mismatch/absent → fall through to download).
++		try {
++			if (await this.sha256OfFile(destPath) === expectedSha256.toLowerCase()) {
++				this.logService.info(`[wso2Update] reusing already-downloaded ${destPath} (sha256 match)`);
++				return;
++			}
++		} catch {
++			// not present or unreadable — download below
++		}
 +		this.logService.info(`[wso2Update] downloading ${url}`);
 +		const context = await this.requestService.request({ url, callSite: 'wso2Update.download' }, CancellationToken.None);
 +		if (context.res.statusCode !== 200) {
@@ -912,6 +923,17 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +			await fs.promises.rm(destPath, { force: true });
 +			throw new Error(`Checksum mismatch for ${url} (expected ${expectedSha256}, got ${actual})`);
 +		}
++	}
++
++	/** Streams a file through sha256 (lowercase hex). Rejects if the file is missing/unreadable. */
++	private sha256OfFile(filePath: string): Promise<string> {
++		return new Promise((resolve, reject) => {
++			const hash = createHash('sha256');
++			const stream = fs.createReadStream(filePath);
++			stream.on('error', reject);
++			stream.on('data', chunk => hash.update(chunk));
++			stream.on('end', () => resolve(hash.digest('hex').toLowerCase()));
++		});
 +	}
 +
 +	//#endregion
