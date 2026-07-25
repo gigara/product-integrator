@@ -790,7 +790,17 @@ jobs:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          npm ci
+          # `npm ci` runs postinstall (build/npm/postinstall.ts), which npm-installs each
+          # bundled/.vscode extension. On GitHub-hosted runners these sub-installs intermittently
+          # fail on transient registry/network hiccups, failing the whole build. Retry a few times.
+          $ok = $false
+          for ($i = 1; $i -le 3; $i++) {
+            npm ci
+            if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+            Write-Host "npm ci failed (attempt $i/3); retrying in 20s..."
+            Start-Sleep -Seconds 20
+          }
+          if (-not $ok) { Write-Error "npm ci failed after 3 attempts"; exit 1 }
 
       - name: Mixin distro modules
         run: |

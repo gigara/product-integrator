@@ -77,7 +77,7 @@ Index: product-integrator/lib/vscode/src/main.ts
  						}
  					}
  				}
-@@ -320,11 +345,82 @@ async function startup(codeCachePath: st
+@@ -320,10 +345,127 @@ async function startup(codeCachePath: st
  			return overrides;
  		};
  
@@ -131,35 +131,80 @@ Index: product-integrator/lib/vscode/src/main.ts
  		const resolvedRuntimeEnv = resolveProductRuntimeEnvironment(product, appRoot, process.env, process.platform, readComponentOverrides());
  		if (resolvedRuntimeEnv) {
  			applyProductRuntimeEnvironment(process.env, resolvedRuntimeEnv);
- 			storeProductRuntimeEnvironment(process.env, resolvedRuntimeEnv);
- 		}
 +
-+		// Resolve the concrete JVM home (§D8): WSO2_INTEGRATOR_JRE_DIR points at the JRE wrapper
-+		// (seeded or bundled) whose single `jdk-*` child is JAVA_HOME. Expose it as
-+		// WSO2_INTEGRATOR_JRE_HOME so the ICP launcher can reference it directly without globbing
-+		// (batch has no non-loop glob). Consumers (bal, icp) inherit it via the child env.
-+		try {
-+			const jreDir = process.env['WSO2_INTEGRATOR_JRE_DIR'];
-+			if (jreDir && fs.existsSync(jreDir)) {
-+				const jdk = fs.readdirSync(jreDir).find(name => name.startsWith('jdk-'));
-+				if (jdk) {
-+					const jreHome = path.join(jreDir, jdk);
-+					process.env['WSO2_INTEGRATOR_JRE_HOME'] = jreHome;
-+					// The bundled Ballerina extension resolves its JDK from <ballerinaHome>/dependencies
-+					// and falls back to JAVA_HOME only when that directory has no jdk-*. Once the runtime
-+					// is seeded/updated into the per-user components home, the JRE lives under
-+					// components/jre/<version> (not a `dependencies` sibling of the active ballerina home),
-+					// so that lookup fails. Point JAVA_HOME at the resolved active JRE so the extension's
-+					// language server always finds the correct (bundled or updated) JDK.
-+					process.env['JAVA_HOME'] = jreHome;
++			// Resolve the concrete JVM home (§D8): WSO2_INTEGRATOR_JRE_DIR points at the JRE wrapper
++			// (seeded or bundled) whose single `jdk-*` child is the JDK home. Expose it as
++			// WSO2_INTEGRATOR_JRE_HOME (the ICP launcher references it directly — batch has no
++			// non-loop glob) and as JAVA_HOME (the bundled Ballerina extension's language-server JDK
++			// resolver falls back to JAVA_HOME once the runtime is seeded/updated to
++			// components/jre/<version>, which is not a `dependencies` sibling of the active ballerina
++			// home). These MUST be added to the runtimeEnv map before storing: the extension host and
++			// terminals rebuild their environment from the serialized store
++			// (applyStoredProductRuntimeEnvironment) rather than inheriting this process's env, so
++			// values set only on process.env here would never reach them.
++			try {
++				const jreDir = process.env['WSO2_INTEGRATOR_JRE_DIR'];
++				if (jreDir && fs.existsSync(jreDir)) {
++					const jdk = fs.readdirSync(jreDir).find(name => name.startsWith('jdk-'));
++					if (jdk) {
++						const jreHome = path.join(jreDir, jdk);
++						resolvedRuntimeEnv.replace['WSO2_INTEGRATOR_JRE_HOME'] = jreHome;
++						resolvedRuntimeEnv.replace['JAVA_HOME'] = jreHome;
++						process.env['WSO2_INTEGRATOR_JRE_HOME'] = jreHome;
++						process.env['JAVA_HOME'] = jreHome;
++					}
 +				}
++			} catch (err) {
++				console.warn('Failed to resolve WSO2_INTEGRATOR_JRE_HOME:', err);
 +			}
-+		} catch (err) {
-+			console.warn('Failed to resolve WSO2_INTEGRATOR_JRE_HOME:', err);
-+		}
++
+ 			storeProductRuntimeEnvironment(process.env, resolvedRuntimeEnv);
++
++			// Bridge the Ballerina extension's language-server JDK lookup (§D8). The extension
++			// resolves its JDK from `<ballerinaHome>/dependencies/<jdk-*>` and THROWS if that
++			// directory is missing (it only falls back to JAVA_HOME when the directory exists but has
++			// no jdk-*). The Ballerina distribution normally bundles its JDK there, but our build ships
++			// it as a separate `jre` component seeded to components/jre/<version> — so after seeding
++			// (or an editor-only app update that strips the install-tree runtimes) the seeded ballerina
++			// home has no `dependencies` dir and the extension fails to activate ("JDK not found in
++			// <ballerinaHome>/dependencies"). Bridge it with a directory junction (Windows) / symlink
++			// (posix) at <ballerinaHome>/dependencies -> the active JRE wrapper (whose jdk-* child the
++			// extension then finds; it resolves the link via realpathSync.native). Repoint a stale link
++			// (e.g. after a JRE component update) but never clobber a real directory.
++			try {
++				const ballerinaHome = process.env['BALLERINA_HOME'];
++				const jreDir = process.env['WSO2_INTEGRATOR_JRE_DIR'];
++				if (ballerinaHome && jreDir && fs.existsSync(ballerinaHome) && fs.existsSync(jreDir)) {
++					const depLink = path.join(ballerinaHome, 'dependencies');
++					const linkType = process.platform === 'win32' ? 'junction' : 'dir';
++					let stat: fs.Stats | undefined;
++					try {
++						stat = fs.lstatSync(depLink);
++					} catch {
++						stat = undefined;
++					}
++					const resolvesToJdk = (): boolean => {
++						try {
++							return fs.readdirSync(depLink).some(name => name.startsWith('jdk-'));
++						} catch {
++							return false;
++						}
++					};
++					if (!stat) {
++						fs.symlinkSync(jreDir, depLink, linkType);
++					} else if (stat.isSymbolicLink() && !resolvesToJdk()) {
++						// Our link, now stale/broken (JRE moved) — repoint it.
++						fs.rmSync(depLink, { recursive: true, force: true });
++						fs.symlinkSync(jreDir, depLink, linkType);
++					}
++					// A real directory (already contains the JDK, or third-party content) is left as-is.
++				}
++			} catch (err) {
++				console.warn('Failed to link Ballerina dependencies to active JRE:', err);
++			}
+ 		}
  	} catch (e) {
  		console.warn('Failed to inject product runtimeEnv:', e);
- 	}
 Index: product-integrator/lib/vscode/src/vs/base/common/product.ts
 ===================================================================
 --- product-integrator.orig/lib/vscode/src/vs/base/common/product.ts
@@ -393,7 +438,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/wso2ComponentUpdateService.ts
-@@ -0,0 +1,865 @@
+@@ -0,0 +1,870 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Microsoft Corporation. All rights reserved.
 + *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -1127,12 +1172,17 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		// app shutdown: if the main/extension-host processes are still holding locks, the silent
 +		// (/qn) install fails and the update is left unapplied while `start` relaunches the old
 +		// build — which is why applying it took several attempts. Wait, then retry msiexec with
-+		// backoff so a slow shutdown still applies cleanly, and only relaunch after all attempts
-+		// finish. `windowsHide` stops the helper console from flashing on screen. (`ping` is used
-+		// for the delays because `timeout` needs a console, which the hidden/detached process lacks.)
++		// backoff so a slow shutdown still applies cleanly. Then settle before relaunching: msiexec
++		// returns as soon as its work is scheduled, but Windows may still be finalizing/unlocking
++		// the freshly-written exe, so an immediate `start` hits the file mid-replacement and the
++		// launch is silently dropped (the install still completes — the update is applied, but the
++		// app does not come back up on its own). A short pre-launch delay lets the exe settle so the
++		// relaunch reliably takes. `windowsHide` stops the helper console from flashing on screen.
++		// (`ping` is used for the delays because `timeout` needs a console, which the hidden/detached
++		// process lacks.)
 +		const exe = process.execPath;
 +		const install = `msiexec /i "${msiPath}" /qn /norestart`;
-+		const cmd = `ping -n 5 127.0.0.1 >nul & ${install} & if errorlevel 1 (ping -n 5 127.0.0.1 >nul & ${install}) & if errorlevel 1 (ping -n 8 127.0.0.1 >nul & ${install}) & start "" "${exe}"`;
++		const cmd = `ping -n 5 127.0.0.1 >nul & ${install} & if errorlevel 1 (ping -n 5 127.0.0.1 >nul & ${install}) & if errorlevel 1 (ping -n 8 127.0.0.1 >nul & ${install}) & ping -n 6 127.0.0.1 >nul & start "" "${exe}"`;
 +		const child = spawn(process.env['comspec'] || 'cmd.exe', ['/s', '/c', `"${cmd}"`], {
 +			detached: true,
 +			stdio: 'ignore',
