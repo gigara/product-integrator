@@ -393,7 +393,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/wso2ComponentUpdateService.ts
-@@ -0,0 +1,836 @@
+@@ -0,0 +1,843 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Microsoft Corporation. All rights reserved.
 + *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -1100,15 +1100,22 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		await this.downloadAndVerify(url, msiPath, sha256);
 +		this.logService.info(`[wso2Update] verified app update MSI at ${msiPath}; scheduling silent install on quit`);
 +
-+		// Run the per-user MSI silently (no UAC), then relaunch. The app must quit first so
-+		// `WSO2 Integrator.exe` is not file-locked; the short delay gives the process time to
-+		// exit before msiexec touches the install directory.
++		// Run the per-user MSI silently (no UAC), then relaunch. The app must fully exit first so
++		// its install files are unlocked before msiexec replaces them. A single short delay races
++		// app shutdown: if the main/extension-host processes are still holding locks, the silent
++		// (/qn) install fails and the update is left unapplied while `start` relaunches the old
++		// build — which is why applying it took several attempts. Wait, then retry msiexec with
++		// backoff so a slow shutdown still applies cleanly, and only relaunch after all attempts
++		// finish. `windowsHide` stops the helper console from flashing on screen. (`ping` is used
++		// for the delays because `timeout` needs a console, which the hidden/detached process lacks.)
 +		const exe = process.execPath;
-+		const cmd = `ping -n 3 127.0.0.1 >nul & msiexec /i "${msiPath}" /qn /norestart & start "" "${exe}"`;
++		const install = `msiexec /i "${msiPath}" /qn /norestart`;
++		const cmd = `ping -n 5 127.0.0.1 >nul & ${install} & if errorlevel 1 (ping -n 5 127.0.0.1 >nul & ${install}) & if errorlevel 1 (ping -n 8 127.0.0.1 >nul & ${install}) & start "" "${exe}"`;
 +		const child = spawn(process.env['comspec'] || 'cmd.exe', ['/s', '/c', `"${cmd}"`], {
 +			detached: true,
 +			stdio: 'ignore',
-+			windowsVerbatimArguments: true
++			windowsVerbatimArguments: true,
++			windowsHide: true
 +		});
 +		child.unref();
 +
