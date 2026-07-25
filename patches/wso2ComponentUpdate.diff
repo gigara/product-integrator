@@ -77,7 +77,7 @@ Index: product-integrator/lib/vscode/src/main.ts
  						}
  					}
  				}
-@@ -320,11 +345,82 @@ async function startup(codeCachePath: st
+@@ -320,9 +345,83 @@ async function startup(codeCachePath: st
  			return overrides;
  		};
  
@@ -131,35 +131,36 @@ Index: product-integrator/lib/vscode/src/main.ts
  		const resolvedRuntimeEnv = resolveProductRuntimeEnvironment(product, appRoot, process.env, process.platform, readComponentOverrides());
  		if (resolvedRuntimeEnv) {
  			applyProductRuntimeEnvironment(process.env, resolvedRuntimeEnv);
++
++			// Resolve the concrete JVM home (§D8): WSO2_INTEGRATOR_JRE_DIR points at the JRE wrapper
++			// (seeded or bundled) whose single `jdk-*` child is the JDK home. Expose it as
++			// WSO2_INTEGRATOR_JRE_HOME (the ICP launcher references it directly — batch has no
++			// non-loop glob) and as JAVA_HOME (the bundled Ballerina extension's language-server JDK
++			// resolver falls back to JAVA_HOME once the runtime is seeded/updated to
++			// components/jre/<version>, which is not a `dependencies` sibling of the active ballerina
++			// home). These MUST be added to the runtimeEnv map before storing: the extension host and
++			// terminals rebuild their environment from the serialized store
++			// (applyStoredProductRuntimeEnvironment) rather than inheriting this process's env, so
++			// values set only on process.env here would never reach them.
++			try {
++				const jreDir = process.env['WSO2_INTEGRATOR_JRE_DIR'];
++				if (jreDir && fs.existsSync(jreDir)) {
++					const jdk = fs.readdirSync(jreDir).find(name => name.startsWith('jdk-'));
++					if (jdk) {
++						const jreHome = path.join(jreDir, jdk);
++						resolvedRuntimeEnv.replace['WSO2_INTEGRATOR_JRE_HOME'] = jreHome;
++						resolvedRuntimeEnv.replace['JAVA_HOME'] = jreHome;
++						process.env['WSO2_INTEGRATOR_JRE_HOME'] = jreHome;
++						process.env['JAVA_HOME'] = jreHome;
++					}
++				}
++			} catch (err) {
++				console.warn('Failed to resolve WSO2_INTEGRATOR_JRE_HOME:', err);
++			}
++
  			storeProductRuntimeEnvironment(process.env, resolvedRuntimeEnv);
  		}
-+
-+		// Resolve the concrete JVM home (§D8): WSO2_INTEGRATOR_JRE_DIR points at the JRE wrapper
-+		// (seeded or bundled) whose single `jdk-*` child is JAVA_HOME. Expose it as
-+		// WSO2_INTEGRATOR_JRE_HOME so the ICP launcher can reference it directly without globbing
-+		// (batch has no non-loop glob). Consumers (bal, icp) inherit it via the child env.
-+		try {
-+			const jreDir = process.env['WSO2_INTEGRATOR_JRE_DIR'];
-+			if (jreDir && fs.existsSync(jreDir)) {
-+				const jdk = fs.readdirSync(jreDir).find(name => name.startsWith('jdk-'));
-+				if (jdk) {
-+					const jreHome = path.join(jreDir, jdk);
-+					process.env['WSO2_INTEGRATOR_JRE_HOME'] = jreHome;
-+					// The bundled Ballerina extension resolves its JDK from <ballerinaHome>/dependencies
-+					// and falls back to JAVA_HOME only when that directory has no jdk-*. Once the runtime
-+					// is seeded/updated into the per-user components home, the JRE lives under
-+					// components/jre/<version> (not a `dependencies` sibling of the active ballerina home),
-+					// so that lookup fails. Point JAVA_HOME at the resolved active JRE so the extension's
-+					// language server always finds the correct (bundled or updated) JDK.
-+					process.env['JAVA_HOME'] = jreHome;
-+				}
-+			}
-+		} catch (err) {
-+			console.warn('Failed to resolve WSO2_INTEGRATOR_JRE_HOME:', err);
-+		}
  	} catch (e) {
- 		console.warn('Failed to inject product runtimeEnv:', e);
- 	}
 Index: product-integrator/lib/vscode/src/vs/base/common/product.ts
 ===================================================================
 --- product-integrator.orig/lib/vscode/src/vs/base/common/product.ts
