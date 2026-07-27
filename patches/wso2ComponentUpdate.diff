@@ -1247,7 +1247,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +			'<title>WSO2 Integrator Update</title>',
 +			'<hta:application id="app" border="none" caption="no" showintaskbar="yes" sysmenu="no" maximizebutton="no" minimizebutton="no" scroll="no" singleinstance="yes" innerborder="no" contextmenu="no" selection="no" />',
 +			'<style>',
-+			"html,body{margin:0;height:100%;font-family:'Segoe UI',Tahoma,sans-serif;background:#1b1b1f;color:#e8e8ea;overflow:hidden;}",
++			`html,body{margin:0;height:100%;font-family:'Segoe UI',Tahoma,sans-serif;background:#1b1b1f;color:#e8e8ea;overflow:hidden;}`,
 +			'.wrap{box-sizing:border-box;height:100%;padding:24px 30px;display:flex;flex-direction:column;justify-content:center;border:1px solid #3a3a40;}',
 +			'.title{font-size:16px;font-weight:600;margin:0 0 8px;}',
 +			'.sub{font-size:12px;line-height:1.5;color:#a9a9b2;margin:0 0 18px;}',
