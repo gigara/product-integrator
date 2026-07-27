@@ -438,7 +438,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/wso2ComponentUpdateService.ts
-@@ -0,0 +1,870 @@
+@@ -0,0 +1,909 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Microsoft Corporation. All rights reserved.
 + *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -1167,26 +1167,65 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		await this.downloadAndVerify(url, msiPath, sha256);
 +		this.logService.info(`[wso2Update] verified app update MSI at ${msiPath}; scheduling silent install on quit`);
 +
-+		// Run the per-user MSI silently (no UAC), then relaunch. The app must fully exit first so
-+		// its install files are unlocked before msiexec replaces them. A single short delay races
-+		// app shutdown: if the main/extension-host processes are still holding locks, the silent
-+		// (/qn) install fails and the update is left unapplied while `start` relaunches the old
-+		// build — which is why applying it took several attempts. Wait, then retry msiexec with
-+		// backoff so a slow shutdown still applies cleanly. Then settle before relaunching: msiexec
-+		// returns as soon as its work is scheduled, but Windows may still be finalizing/unlocking
-+		// the freshly-written exe, so an immediate `start` hits the file mid-replacement and the
-+		// launch is silently dropped (the install still completes — the update is applied, but the
-+		// app does not come back up on its own). A short pre-launch delay lets the exe settle so the
-+		// relaunch reliably takes. `windowsHide` stops the helper console from flashing on screen.
-+		// (`ping` is used for the delays because `timeout` needs a console, which the hidden/detached
-+		// process lacks.)
++		// Apply the editor-only MSI on quit, then relaunch — deterministically. The earlier approach
++		// (a detached cmd.exe with fixed `ping` delays) was racy: msiexec could fire while the app
++		// still held locks, leaving the update unapplied, and Node's windowsHide+detached combo
++		// intermittently flashed a console window. Instead write a small updater batch that WAITS for
++		// this process to actually exit (rather than guessing a delay), retries msiexec with a
++		// verbose log + a status file (so any failure is diagnosable under the downloads folder),
++		// then relaunches — and start it fully hidden via a tiny VBScript shim (WScript.Shell.Run
++		// with windowStyle 0 reliably suppresses the console, unlike windowsHide on a detached cmd).
++		// (`ping` provides the sub-second waits because `timeout` needs a console the hidden process
++		// lacks.)
 +		const exe = process.execPath;
-+		const install = `msiexec /i "${msiPath}" /qn /norestart`;
-+		const cmd = `ping -n 5 127.0.0.1 >nul & ${install} & if errorlevel 1 (ping -n 5 127.0.0.1 >nul & ${install}) & if errorlevel 1 (ping -n 8 127.0.0.1 >nul & ${install}) & ping -n 6 127.0.0.1 >nul & start "" "${exe}"`;
-+		const child = spawn(process.env['comspec'] || 'cmd.exe', ['/s', '/c', `"${cmd}"`], {
++		const pid = process.pid;
++		const msiLogPath = path.join(downloadsHome, 'apply-update.msiexec.log');
++		const statusPath = path.join(downloadsHome, 'apply-update.status');
++		const batPath = path.join(downloadsHome, 'apply-update.bat');
++		const vbsPath = path.join(downloadsHome, 'apply-update.launch.vbs');
++
++		const bat = [
++			'@echo off',
++			'setlocal',
++			// Wait for the editor (this PID) to fully exit so its install files are unlocked.
++			':waitloop',
++			`tasklist /fi "PID eq ${pid}" 2>nul | find "${pid}" >nul`,
++			'if not errorlevel 1 (',
++			'  ping -n 2 127.0.0.1 >nul',
++			'  goto waitloop',
++			')',
++			// Settle so child processes (extension host, pty host) release their locks too.
++			'ping -n 3 127.0.0.1 >nul',
++			// Install silently (no UAC for a per-user MSI); retry with backoff on failure.
++			'call :install',
++			'if not errorlevel 1 goto relaunch',
++			'ping -n 5 127.0.0.1 >nul',
++			'call :install',
++			'if not errorlevel 1 goto relaunch',
++			'ping -n 8 127.0.0.1 >nul',
++			'call :install',
++			':relaunch',
++			`echo result=%errorlevel% > "${statusPath}"`,
++			// Settle so the freshly-written exe is unlocked, then relaunch the editor.
++			'ping -n 4 127.0.0.1 >nul',
++			`start "" "${exe}"`,
++			'goto :eof',
++			':install',
++			`msiexec /i "${msiPath}" /qn /norestart /l*v "${msiLogPath}"`,
++			'goto :eof',
++			''
++		].join('\r\n');
++
++		// VBScript shim: run the batch with a hidden window (0) without waiting (False). The doubled
++		// quotes each escape a literal quote inside the VBScript string literal.
++		const vbs = `CreateObject("WScript.Shell").Run "cmd /c ""${batPath}""", 0, False\r\n`;
++
++		await fs.promises.writeFile(batPath, bat, 'utf8');
++		await fs.promises.writeFile(vbsPath, vbs, 'utf8');
++		this.logService.info(`[wso2Update] launching hidden updater (waits for pid ${pid} to exit); msiexec log -> ${msiLogPath}, status -> ${statusPath}`);
++		const child = spawn('wscript.exe', [vbsPath], {
 +			detached: true,
 +			stdio: 'ignore',
-+			windowsVerbatimArguments: true,
 +			windowsHide: true
 +		});
 +		child.unref();
