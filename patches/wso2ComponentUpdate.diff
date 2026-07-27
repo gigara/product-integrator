@@ -438,7 +438,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/wso2ComponentUpdateService.ts
-@@ -0,0 +1,916 @@
+@@ -0,0 +1,975 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Microsoft Corporation. All rights reserved.
 + *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -1183,10 +1183,19 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		const statusPath = path.join(downloadsHome, 'apply-update.status');
 +		const batPath = path.join(downloadsHome, 'apply-update.bat');
 +		const vbsPath = path.join(downloadsHome, 'apply-update.launch.vbs');
++		const splashPath = path.join(downloadsHome, 'apply-update.splash.hta');
 +
 +		const bat = [
 +			'@echo off',
 +			'setlocal enabledelayedexpansion',
++			// Reset the status file up front so the splash (launched next) never sees a stale "done"
++			// left by a prior update run and close immediately.
++			`echo start %date% %time% pid=${pid} > "${statusPath}"`,
++			// Show a small progress window for the multi-minute install (the app window is gone by
++			// now, so without this the screen looks frozen). mshta renders the .hta with a normal GUI
++			// window even though this cmd is hidden; the .hta polls the status file and closes itself
++			// once we write "done" just before relaunch.
++			`start "" mshta.exe "${splashPath}"`,
 +			// Wait for the editor (this PID) to fully exit so its install files are unlocked.
 +			':waitloop',
 +			`tasklist /fi "PID eq ${pid}" 2>nul | find "${pid}" >nul`,
@@ -1196,7 +1205,6 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +			')',
 +			// Settle so child processes (extension host, pty host) release their locks too.
 +			'ping -n 3 127.0.0.1 >nul',
-+			`echo start %date% %time% pid=${pid} > "${statusPath}"`,
 +			// Install silently (no UAC for a per-user MSI). msiexec bails immediately with 1618
 +			// (ERROR_INSTALL_ALREADY_RUNNING) if any other Windows Installer transaction holds the
 +			// global execute mutex — which happens transiently right after the base install or when
@@ -1216,9 +1224,10 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +			'ping -n 8 127.0.0.1 >nul',
 +			'goto retry',
 +			':relaunch',
-+			`echo done rc=!RC! tries=!tries! %time% >> "${statusPath}"`,
-+			// Settle so the freshly-written exe is unlocked, then relaunch the editor.
++			// Settle so the freshly-written exe is unlocked, THEN mark done (closes the splash) and
++			// relaunch — so the splash stays up until the moment the editor reappears.
 +			'ping -n 4 127.0.0.1 >nul',
++			`echo done rc=!RC! tries=!tries! %time% >> "${statusPath}"`,
 +			`start "" "${exe}"`,
 +			''
 +		].join('\r\n');
@@ -1227,8 +1236,58 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		// quotes each escape a literal quote inside the VBScript string literal.
 +		const vbs = `CreateObject("WScript.Shell").Run "cmd /c ""${batPath}""", 0, False\r\n`;
 +
++		// Progress splash (borderless HTA rendered by the built-in mshta). It polls the status file
++		// via FileSystemObject and closes itself when the batch writes "done" (or after a 10-min
++		// safety timeout). statusPath is embedded as a JSON string literal so backslashes are escaped.
++		const splash = [
++			'<!DOCTYPE html>',
++			'<html>',
++			'<head>',
++			'<meta http-equiv="x-ua-compatible" content="ie=edge" />',
++			'<title>WSO2 Integrator Update</title>',
++			'<hta:application id="app" border="none" caption="no" showintaskbar="yes" sysmenu="no" maximizebutton="no" minimizebutton="no" scroll="no" singleinstance="yes" innerborder="no" contextmenu="no" selection="no" />',
++			'<style>',
++			"html,body{margin:0;height:100%;font-family:'Segoe UI',Tahoma,sans-serif;background:#1b1b1f;color:#e8e8ea;overflow:hidden;}",
++			'.wrap{box-sizing:border-box;height:100%;padding:24px 30px;display:flex;flex-direction:column;justify-content:center;border:1px solid #3a3a40;}',
++			'.title{font-size:16px;font-weight:600;margin:0 0 8px;}',
++			'.sub{font-size:12px;line-height:1.5;color:#a9a9b2;margin:0 0 18px;}',
++			'.bar{position:relative;height:6px;border-radius:3px;background:#2c2c33;overflow:hidden;}',
++			'.fill{position:absolute;top:0;left:-40%;width:40%;height:100%;border-radius:3px;background:#ff7300;animation:slide 1.2s ease-in-out infinite;}',
++			'@keyframes slide{0%{left:-40%}100%{left:100%}}',
++			'</style>',
++			'</head>',
++			'<body>',
++			'<div class="wrap">',
++			'<p class="title">Updating WSO2 Integrator&hellip;</p>',
++			'<p class="sub">This may take a few minutes. The editor will reopen automatically when the update is complete.</p>',
++			'<div class="bar"><div class="fill"></div></div>',
++			'</div>',
++			'<script language="javascript">',
++			'window.resizeTo(460,180);',
++			'try{window.moveTo(Math.max(0,(screen.availWidth-460)/2),Math.max(0,(screen.availHeight-180)/2));}catch(e){}',
++			'var fso=new ActiveXObject("Scripting.FileSystemObject");',
++			`var statusFile=${JSON.stringify(statusPath)};`,
++			'var started=(new Date()).getTime();',
++			'function tick(){',
++			'  try{',
++			'    if(fso.FileExists(statusFile)){',
++			'      var f=fso.OpenTextFile(statusFile,1,false);var t=f.ReadAll();f.Close();',
++			'      if(t.indexOf("done rc=")>=0){window.close();return;}',
++			'    }',
++			'  }catch(e){}',
++			'  if((new Date()).getTime()-started>600000){window.close();return;}',
++			'  window.setTimeout(tick,1000);',
++			'}',
++			'window.setTimeout(tick,1000);',
++			'</script>',
++			'</body>',
++			'</html>',
++			''
++		].join('\r\n');
++
 +		await fs.promises.writeFile(batPath, bat, 'utf8');
 +		await fs.promises.writeFile(vbsPath, vbs, 'utf8');
++		await fs.promises.writeFile(splashPath, splash, 'utf8');
 +		this.logService.info(`[wso2Update] launching hidden updater (waits for pid ${pid} to exit); msiexec log -> ${msiLogPath}, status -> ${statusPath}`);
 +		const child = spawn('wscript.exe', [vbsPath], {
 +			detached: true,
@@ -1836,7 +1895,7 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +	}
 +	const { confirmed } = await dialogService.confirm({
 +		message: localize("wso2.updates.appConfirm", "Update WSO2 Integrator to {0}?", version),
-+		detail: localize("wso2.updates.appConfirmDetail", "The update will be downloaded and installed, then WSO2 Integrator will restart."),
++		detail: localize("wso2.updates.appConfirmDetail", "WSO2 Integrator will close to install the update. This can take a few minutes — a progress window will show while it installs, and the editor will reopen automatically when it's done."),
 +		primaryButton: localize("wso2.updates.appConfirmYes", "Update and Restart")
 +	});
 +	if (!confirmed) {
