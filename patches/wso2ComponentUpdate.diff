@@ -438,7 +438,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/wso2ComponentUpdateService.ts
-@@ -0,0 +1,909 @@
+@@ -0,0 +1,916 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Microsoft Corporation. All rights reserved.
 + *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -1186,7 +1186,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +
 +		const bat = [
 +			'@echo off',
-+			'setlocal',
++			'setlocal enabledelayedexpansion',
 +			// Wait for the editor (this PID) to fully exit so its install files are unlocked.
 +			':waitloop',
 +			`tasklist /fi "PID eq ${pid}" 2>nul | find "${pid}" >nul`,
@@ -1196,23 +1196,30 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +			')',
 +			// Settle so child processes (extension host, pty host) release their locks too.
 +			'ping -n 3 127.0.0.1 >nul',
-+			// Install silently (no UAC for a per-user MSI); retry with backoff on failure.
-+			'call :install',
-+			'if not errorlevel 1 goto relaunch',
-+			'ping -n 5 127.0.0.1 >nul',
-+			'call :install',
-+			'if not errorlevel 1 goto relaunch',
++			`echo start %date% %time% pid=${pid} > "${statusPath}"`,
++			// Install silently (no UAC for a per-user MSI). msiexec bails immediately with 1618
++			// (ERROR_INSTALL_ALREADY_RUNNING) if any other Windows Installer transaction holds the
++			// global execute mutex — which happens transiently right after the base install or when
++			// another installer is mid-flight. A few quick retries are not enough to outlast it, so
++			// retry patiently (up to ~5 min) until msiexec succeeds; break out on success (0) or a
++			// reboot-pending success (3010/1641).
++			'set /a tries=0',
++			':retry',
++			'set /a tries+=1',
++			`msiexec /i "${msiPath}" /qn /norestart /l*v "${msiLogPath}"`,
++			'set RC=!errorlevel!',
++			`echo attempt !tries! rc=!RC! %time% >> "${statusPath}"`,
++			'if "!RC!"=="0" goto relaunch',
++			'if "!RC!"=="3010" goto relaunch',
++			'if "!RC!"=="1641" goto relaunch',
++			'if !tries! geq 40 goto relaunch',
 +			'ping -n 8 127.0.0.1 >nul',
-+			'call :install',
++			'goto retry',
 +			':relaunch',
-+			`echo result=%errorlevel% > "${statusPath}"`,
++			`echo done rc=!RC! tries=!tries! %time% >> "${statusPath}"`,
 +			// Settle so the freshly-written exe is unlocked, then relaunch the editor.
 +			'ping -n 4 127.0.0.1 >nul',
 +			`start "" "${exe}"`,
-+			'goto :eof',
-+			':install',
-+			`msiexec /i "${msiPath}" /qn /norestart /l*v "${msiLogPath}"`,
-+			'goto :eof',
 +			''
 +		].join('\r\n');
 +
