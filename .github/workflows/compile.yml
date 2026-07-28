@@ -30,10 +30,8 @@ permissions:
   contents: write
 
 env:
-  # Stamp product.commit from the product-integrator ROOT sha (github.sha resolves to the caller's
-  # sha for this reusable workflow), not the lib/vscode submodule sha — so each product release has
-  # a distinct commit for update checks (mac Squirrel compares builds by commit). getVersion()
-  # prefers BUILD_SOURCEVERSION when it is a 40-hex sha.
+  # product.commit = product-integrator root sha (not the lib/vscode submodule sha) so each release
+  # has a distinct commit for update checks. getVersion() prefers BUILD_SOURCEVERSION.
   BUILD_SOURCEVERSION: ${{ github.sha }}
 
 jobs:
@@ -121,13 +119,12 @@ jobs:
   compile:
     needs: resolve-versions
     name: Build repo
-    # 45 min suffices on the large, cache-warmed self-hosted (codebuild) runners; a cold
-    # GitHub-hosted ubuntu-latest run (e.g. a fork) needs more headroom for the full compile.
+    # Headroom for a cold GitHub-hosted (fork) compile; warm self-hosted runners finish in ~45 min.
     timeout-minutes: 150
     runs-on: ${{ inputs.runOnAWS && inputs.awsRunnerId || 'ubuntu-latest' }}
     env:
-      # When AWS creds are absent (e.g. a fork), skip the S3 upload and still produce the
-      # downloadable GitHub build artifacts; upstream (secret set) publishes to S3 as before.
+      # secrets can't be referenced in `if:`, so expose AWS-creds presence as an env to gate the
+      # S3 steps (a fork without creds skips S3 and still uploads GitHub artifacts).
       HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
     defaults:
       run:
@@ -299,11 +296,8 @@ jobs:
           chmod +x ./ci/build/update-product.sh
           ./ci/build/update-product.sh "${{ needs.resolve-versions.outputs.integrator_version }}"
 
-      # Apply the quilt patches explicitly (from the repo root) instead of relying on the
-      # rush `preRushBuild` apply-patches hook, whose output rush suppresses and whose failure
-      # rush treats as non-fatal — leaving vscode unpatched and later breaking the build
-      # (e.g. the vsix checksum check that disableVsixChecksumCheck is meant to disable).
-      # Running quilt directly here surfaces any patch error and guarantees patches are applied.
+      # Apply patches explicitly here (not via rush's preRushBuild hook, which suppresses output
+      # and treats patch failures as non-fatal, leaving vscode silently unpatched).
       - name: Apply patches
         working-directory: .
         run: quilt push -a
@@ -323,9 +317,7 @@ jobs:
       - name: Build WI extension
         working-directory: .
         env:
-          # download-choreo-cli.js fetches release info from the GitHub API; without a
-          # token it uses the unauthenticated 60/hr limit and fails with HTTP 403 under
-          # repeated builds. Authenticate to get the 5000/hr limit.
+          # Authenticate GitHub API calls (download-choreo-cli.js) to avoid the 60/hr 403 limit.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           node common/scripts/install-run-rush.js build --verbose
@@ -336,9 +328,7 @@ jobs:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # `npm ci` runs postinstall (build/npm/postinstall.ts), which npm-installs each
-          # bundled/.vscode extension. On GitHub-hosted runners these sub-installs intermittently
-          # fail on transient registry/network hiccups, failing the whole build. Retry a few times.
+          # Retry npm ci — its postinstall sub-installs flake on transient registry hiccups.
           ok=
           for i in 1 2 3; do
             npm ci && { ok=1; break; }
