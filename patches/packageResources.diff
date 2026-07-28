@@ -14,3 +14,20 @@ Index: product-integrator/lib/vscode/build/gulpfile.vscode.ts
  	'out-build/vs/workbench/contrib/debug/browser/media/*.png',
  
  	// External Terminal
+Index: product-integrator/lib/vscode/build/next/index.ts
+===================================================================
+--- product-integrator.orig/lib/vscode/build/next/index.ts
++++ product-integrator/lib/vscode/build/next/index.ts
+@@ -290,7 +290,11 @@ const desktopResourcePatterns = [
+ 	'vs/workbench/contrib/extensions/browser/media/{theme-icon.png,language-icon.svg}',
+ 	'vs/workbench/services/extensionManagement/common/media/*.svg',
+ 	'vs/workbench/services/extensionManagement/common/media/*.png',
+-	'vs/workbench/browser/parts/editor/media/*.png',
++	// WSO2 Integrator: copy *.svg too (not just *.png). The stock 1.127 esbuild build
++	// only lists letterpress*.svg here, which drops the WSO2 branding asset
++	// integrator-activity-icon-dark.svg (referenced from JS via FileAccess in the sign-in
++	// dialog, so esbuild never emits it from CSS). The old gulp bundle copied *.{png,svg}.
++	'vs/workbench/browser/parts/editor/media/*.{png,svg}',
+ 	'vs/workbench/contrib/debug/browser/media/*.png',
+ 
+ 	// Sessions - built-in prompts and skills
