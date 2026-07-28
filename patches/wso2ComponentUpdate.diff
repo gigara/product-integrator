@@ -438,7 +438,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/wso2ComponentUpdateService.ts
-@@ -0,0 +1,975 @@
+@@ -0,0 +1,1009 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Microsoft Corporation. All rights reserved.
 + *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -455,7 +455,6 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +import { CancellationToken } from '../../../base/common/cancellation.js';
 +import { VSBuffer, streamToBuffer } from '../../../base/common/buffer.js';
 +import { listenStream } from '../../../base/common/stream.js';
-+import * as semver from '../../../base/common/semver/semver.js';
 +import { extract } from '../../../base/node/zip.js';
 +import { IConfigurationService } from '../../configuration/common/configuration.js';
 +import { ILifecycleMainService, LifecycleMainPhase } from '../../lifecycle/electron-main/lifecycleMainService.js';
@@ -698,16 +697,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		const candidateIds = manifest.recommendedSet
 +			? Object.keys(manifest.recommendedSet.members)
 +			: manifest.components.map(c => c.id);
-+
-+		// Versions that would be present if the whole candidate set were applied — used
-+		// for `requires` closure so a set that upgrades a dependency together is allowed.
-+		const projected = new Map<string, string>();
-+		for (const id of candidateIds) {
-+			const c = byId.get(id);
-+			if (c) {
-+				projected.set(id, c.version);
-+			}
-+		}
++		const projected = this.projectedVersions(manifest);
 +
 +		const offered: IWso2AvailableUpdate[] = [];
 +		for (const id of candidateIds) {
@@ -758,18 +748,58 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +			if (!depVersion) {
 +				return false;
 +			}
-+			const coerced = semver.valid(depVersion) ? depVersion : semver.coerce(depVersion)?.version;
-+			if (!coerced) {
-+				// Can't parse — do not block on a parsing quirk; log and accept.
-+				this.logService.trace(`[wso2Update] cannot parse version '${depVersion}' for requirement ${depId} ${range}; accepting`);
++			if (!this.satisfiesRange(depVersion, range)) {
++				this.logService.trace(`[wso2Update] ${component.id}: ${depId} ${depVersion} does not satisfy '${range}'`);
++				return false;
++			}
++		}
++		return true;
++	}
++
++	/**
++	 * Versions that would be present if the whole recommended/candidate set were applied — used for
++	 * the `requires` closure so a set that upgrades a dependency together is allowed. Shared by
++	 * resolveOfferedUpdates and getComponentStatuses so both agree on what is offered.
++	 */
++	private projectedVersions(manifest: IWso2UpdateManifest): Map<string, string> {
++		const byId = new Map(manifest.components.map(c => [c.id, c]));
++		const candidateIds = manifest.recommendedSet
++			? Object.keys(manifest.recommendedSet.members)
++			: manifest.components.map(c => c.id);
++		const projected = new Map<string, string>();
++		for (const id of candidateIds) {
++			const c = byId.get(id);
++			if (c) {
++				projected.set(id, c.version);
++			}
++		}
++		return projected;
++	}
++
++	/**
++	 * Evaluate a manifest `requires` range against a version with the 4-part-aware
++	 * `compareVersions` — NOT semver. App versions are 4-part (e.g. `5.0.0.2`) and not valid semver,
++	 * so `semver.satisfies` rejects any range built from them (e.g. `>=5.0.0.2`) and would silently
++	 * drop every update (all components require `app`). The manifest only uses simple comparator
++	 * ranges (`>=X`, optionally space-separated ANDs); an unrecognized comparator is accepted rather
++	 * than blocking, so a future range form can never strand updates.
++	 */
++	private satisfiesRange(version: string, range: string): boolean {
++		for (const comparator of range.trim().split(/\s+/).filter(Boolean)) {
++			const match = /^(>=|<=|>|<|==|=)?\s*(.+)$/.exec(comparator);
++			if (!match) {
++				this.logService.trace(`[wso2Update] unrecognized version comparator '${comparator}'; accepting`);
 +				continue;
 +			}
-+			try {
-+				if (!semver.satisfies(coerced, range)) {
-+					return false;
-+				}
-+			} catch {
-+				this.logService.trace(`[wso2Update] invalid range '${range}' for ${depId}; accepting`);
++			const op = match[1] ?? '=';
++			const cmp = compareVersions(version, match[2]);
++			const satisfied = op === '>=' ? cmp >= 0
++				: op === '>' ? cmp > 0
++					: op === '<=' ? cmp <= 0
++						: op === '<' ? cmp < 0
++							: cmp === 0;
++			if (!satisfied) {
++				return false;
 +			}
 +		}
 +		return true;
@@ -1004,13 +1034,17 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		}
 +		// Overlay available versions from the last manifest.
 +		if (this.lastManifest) {
++			const projected = this.projectedVersions(this.lastManifest);
 +			for (const component of this.lastManifest.components) {
 +				const existing = statuses.get(component.id);
 +				const activeVersion = this.activeVersion(component.id, local);
 +				const pendingVersion = local?.components[component.id]?.pending?.version;
-+				// Not "available" if already current, or already staged (pending) at that version.
++				// Not "available" if already current, already staged (pending) at that version, or
++				// its `requires` are unmet — mirrors resolveOfferedUpdates so Show Components and the
++				// check command agree.
 +				const availableVersion = ((!activeVersion || compareVersions(component.version, activeVersion) > 0)
-+					&& !(pendingVersion && compareVersions(pendingVersion, component.version) >= 0))
++					&& !(pendingVersion && compareVersions(pendingVersion, component.version) >= 0)
++					&& this.requiresSatisfied(component, this.lastManifest, local, projected))
 +					? component.version : undefined;
 +				statuses.set(component.id, {
 +					id: component.id,
