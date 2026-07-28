@@ -429,7 +429,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/wso2ComponentUpdateService.ts
-@@ -0,0 +1,975 @@
+@@ -0,0 +1,980 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Microsoft Corporation. All rights reserved.
 + *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -482,8 +482,13 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +const CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours
 +const INITIAL_CHECK_DELAY_MS = 8 * 1000; // shortly after window open (startup check)
 +
-+/** Hosts artifacts and manifests are allowed to be served from (defense in depth on top of TLS). */
-+const ALLOWED_HOST_SUFFIXES = ['updates.wso2.com', 'github.com', 'githubusercontent.com', 'wso2.com', 'open-vsx.org'];
++/**
++ * Hosts artifacts and manifests are allowed to be served from (defense in depth on top of TLS).
++ * All update artifacts are mirrored to the WSO2 update bucket/CDN at publish time
++ * (generate-update-manifest.mjs --mirror-dir), so third-party hosts like open-vsx are not needed.
++ * github stays for now (test manifests + runtime artifacts during the transition).
++ */
++const ALLOWED_HOST_SUFFIXES = ['updates.wso2.com', 'github.com', 'githubusercontent.com', 'wso2.com'];
 +
 +export class Wso2ComponentUpdateService extends Disposable implements IWso2ComponentUpdateService {
 +

@@ -9,20 +9,29 @@
 // ci/build/component-versions.properties, computing each artifact's sha256 + size by
 // downloading it. The output is uploaded (and cosign-signed) by the publish-update-manifest CI job.
 //
+// With --artifacts-base + --mirror-dir, every artifact (components + app installer) is also
+// MIRRORED: the downloaded bytes are written under --mirror-dir (components/{id}/{version}/
+// and app/{version}/) for the CI job to upload to the update bucket, and the manifest's URLs
+// point at {artifacts-base}/<that path> (the CDN in front of the bucket) instead of the source.
+// Components may declare `sourceFile` (a repo-relative file, e.g. the locally built WI extension
+// VSIX) instead of `url`; those require mirroring since they have no public source URL.
+//
 // Usage:
 //   node ci/build/generate-update-manifest.mjs \
 //     --channel stable --platform darwin --arch arm64 --sequence 42 \
-//     --app-version 5.0.1.0 [--app-installer-url URL] [--out manifest.json] [--no-download]
+//     --app-version 5.0.1.0 [--app-installer-url URL] [--out manifest.json] \
+//     [--artifacts-base https://cdn/artifacts --mirror-dir artifacts-mirror] [--no-download]
 //
 // --no-download emits placeholder hashes (structure-only; for local validation, not for release).
 
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, createReadStream, createWriteStream, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.join(SCRIPT_DIR, '..', '..');
 
 function parseArgs(argv) {
 	const args = {};
@@ -62,16 +71,46 @@ function substitute(template, vars) {
 	return template.replace(/\{(\w+)\}/g, (_m, key) => (vars[key] !== undefined ? String(vars[key]) : `{${key}}`));
 }
 
-async function hashAndSize(url) {
+// Streams the artifact once: hashes it, and (when mirrorPath is set) writes the same bytes to
+// disk for the CI job to upload to the update bucket.
+async function hashAndSize(url, mirrorPath) {
 	const res = await fetch(url, { redirect: 'follow' });
 	if (!res.ok || !res.body) {
 		throw new Error(`Failed to download ${url}: HTTP ${res.status}`);
 	}
 	const hash = createHash('sha256');
 	let size = 0;
+	let out;
+	if (mirrorPath) {
+		mkdirSync(path.dirname(mirrorPath), { recursive: true });
+		out = createWriteStream(mirrorPath);
+	}
 	for await (const chunk of Readable.fromWeb(res.body)) {
 		hash.update(chunk);
 		size += chunk.length;
+		if (out && !out.write(chunk)) {
+			await new Promise(resolve => out.once('drain', resolve));
+		}
+	}
+	if (out) {
+		await new Promise((resolve, reject) => {
+			out.on('error', reject);
+			out.end(resolve);
+		});
+	}
+	return { sha256: hash.digest('hex'), sizeBytes: size };
+}
+
+async function hashLocalFile(filePath, mirrorPath) {
+	const hash = createHash('sha256');
+	let size = 0;
+	for await (const chunk of createReadStream(filePath)) {
+		hash.update(chunk);
+		size += chunk.length;
+	}
+	if (mirrorPath) {
+		mkdirSync(path.dirname(mirrorPath), { recursive: true });
+		copyFileSync(filePath, mirrorPath);
 	}
 	return { sha256: hash.digest('hex'), sizeBytes: size };
 }
@@ -93,6 +132,14 @@ async function main() {
 	const config = JSON.parse(readFileSync(configPath, 'utf8'));
 	const versions = readVersions(versionsPath);
 
+	// Mirror mode: artifacts are re-hosted on the update bucket/CDN and the manifest points there.
+	const artifactsBase = typeof args['artifacts-base'] === 'string' ? args['artifacts-base'].replace(/\/+$/, '') : '';
+	const mirrorDir = typeof args['mirror-dir'] === 'string' ? args['mirror-dir'] : '';
+	if (artifactsBase && !mirrorDir && !args['no-download']) {
+		// A CDN URL in the manifest with no mirrored bytes to upload would 404 for every client.
+		throw new Error('--artifacts-base requires --mirror-dir (or --no-download for structure checks)');
+	}
+
 	const appVersion = args['app-version'] || versions['integrator.version'];
 	const platformArch = `${platform}-${arch}`;
 
@@ -105,27 +152,62 @@ async function main() {
 		jrePlatform: config.platformTokens?.jre?.[platformArch]
 	};
 
+	// A component's version comes from component-versions.properties (versionKey) or, for
+	// components built in this repo (e.g. the WI extension), from their own package.json.
+	const resolveVersion = component => {
+		if (component.versionKey) {
+			return versions[component.versionKey];
+		}
+		if (component.versionFromPackageJson) {
+			return JSON.parse(readFileSync(path.join(REPO_ROOT, component.versionFromPackageJson), 'utf8')).version;
+		}
+		return undefined;
+	};
+
 	const components = [];
 	for (const component of config.components) {
-		const version = versions[component.versionKey];
+		const version = resolveVersion(component);
 		// Fail rather than skip: a declared component that can't be rendered would otherwise
 		// produce a signed-but-incomplete manifest (and a recommendedSet referencing it), which
 		// the client would treat as authoritative. A missing version / unresolved URL is a
 		// release-blocking configuration error.
 		if (!version) {
-			throw new Error(`Cannot render ${component.id}: no version for key '${component.versionKey}'`);
-		}
-		const url = substitute(component.url, { ...substitutionVars, version });
-		if (url.includes('{')) {
-			throw new Error(`Cannot render ${component.id}: unresolved URL placeholder in '${url}'`);
+			throw new Error(`Cannot render ${component.id}: no version (key '${component.versionKey ?? component.versionFromPackageJson}')`);
 		}
 
-		const artifact = { url };
+		// Source: a public URL to fetch from, or a repo-local file (locally built artifacts).
+		let sourceUrl;
+		let sourceFile;
+		if (component.sourceFile) {
+			sourceFile = path.join(REPO_ROOT, substitute(component.sourceFile, { ...substitutionVars, version }));
+		} else {
+			sourceUrl = substitute(component.url, { ...substitutionVars, version });
+			if (sourceUrl.includes('{')) {
+				throw new Error(`Cannot render ${component.id}: unresolved URL placeholder in '${sourceUrl}'`);
+			}
+		}
+
+		const fileName = sourceFile
+			? path.basename(sourceFile)
+			: decodeURIComponent(path.posix.basename(new URL(sourceUrl).pathname));
+		const relPath = `components/${component.id}/${version}/${fileName}`;
+
+		const artifact = {};
+		if (artifactsBase) {
+			artifact.url = `${artifactsBase}/${relPath}`;
+		} else if (sourceUrl) {
+			artifact.url = sourceUrl;
+		} else {
+			throw new Error(`Cannot render ${component.id}: sourceFile components require --artifacts-base (no public source URL)`);
+		}
 		if (noDownload) {
 			artifact.sha256 = 'PLACEHOLDER_NO_DOWNLOAD';
 			artifact.sizeBytes = 0;
 		} else {
-			const { sha256, sizeBytes } = await hashAndSize(url);
+			const mirrorPath = artifactsBase ? path.join(mirrorDir, relPath) : undefined;
+			const { sha256, sizeBytes } = sourceFile
+				? await hashLocalFile(sourceFile, mirrorPath)
+				: await hashAndSize(sourceUrl, mirrorPath);
 			artifact.sha256 = sha256;
 			artifact.sizeBytes = sizeBytes;
 		}
@@ -144,15 +226,20 @@ async function main() {
 		});
 	}
 
-	// App installer (full-app update) — optional; only when an installer URL is supplied.
+	// App installer (core-app update) — optional; only when an installer URL is supplied.
+	// Mirrored to the bucket like every other artifact when --artifacts-base is set.
 	let app;
 	if (args['app-installer-url']) {
-		const installer = { url: args['app-installer-url'] };
+		const sourceUrl = args['app-installer-url'];
+		const fileName = decodeURIComponent(path.posix.basename(new URL(sourceUrl).pathname));
+		const relPath = `app/${appVersion}/${fileName}`;
+		const installer = { url: artifactsBase ? `${artifactsBase}/${relPath}` : sourceUrl };
 		if (noDownload) {
 			installer.sha256 = 'PLACEHOLDER_NO_DOWNLOAD';
 			installer.sizeBytes = 0;
 		} else {
-			const { sha256, sizeBytes } = await hashAndSize(args['app-installer-url']);
+			const mirrorPath = artifactsBase ? path.join(mirrorDir, relPath) : undefined;
+			const { sha256, sizeBytes } = await hashAndSize(sourceUrl, mirrorPath);
 			installer.sha256 = sha256;
 			installer.sizeBytes = sizeBytes;
 		}
@@ -161,8 +248,9 @@ async function main() {
 
 	const recommendedMembers = {};
 	for (const component of config.components) {
-		if (component.recommended && versions[component.versionKey]) {
-			recommendedMembers[component.id] = versions[component.versionKey];
+		const version = resolveVersion(component);
+		if (component.recommended && version) {
+			recommendedMembers[component.id] = version;
 		}
 	}
 

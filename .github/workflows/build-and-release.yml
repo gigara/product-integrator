@@ -1221,6 +1221,15 @@ jobs:
         with:
           node-version: '20'
 
+      # The WI extension is built in-repo (no public download URL); its VSIX is mirrored to the
+      # update bucket from this artifact (config `sourceFile`).
+      - name: Download WI extension VSIX
+        if: ${{ env.PUBLISH == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: wi-extension-vsix
+          path: wi/wi-extension
+
       - name: Resolve installer URL
         id: installer
         if: ${{ env.PUBLISH == 'true' }}
@@ -1237,9 +1246,16 @@ jobs:
           esac
           echo "url=https://github.com/${{ github.repository }}/releases/download/v${V}/${FILE}" >> "$GITHUB_OUTPUT"
 
+      # WSO2_UPDATE_ARTIFACTS_URL = the CDN base fronting s3://$AWS_UPDATE_S3_BUCKET/artifacts.
+      # When set, every artifact (components + app installer) is mirrored into artifacts-mirror/
+      # and the manifest points clients at the CDN only — no open-vsx/github in client URLs.
       - name: Generate manifest
         if: ${{ env.PUBLISH == 'true' }}
         run: |
+          MIRROR_ARGS=()
+          if [ -n "${{ secrets.WSO2_UPDATE_ARTIFACTS_URL }}" ]; then
+            MIRROR_ARGS=(--artifacts-base "${{ secrets.WSO2_UPDATE_ARTIFACTS_URL }}" --mirror-dir artifacts-mirror)
+          fi
           node ci/build/generate-update-manifest.mjs \
             --channel "${CHANNEL}" \
             --platform "${{ matrix.platform }}" \
@@ -1247,6 +1263,7 @@ jobs:
             --sequence "${{ github.run_number }}" \
             --app-version "${{ needs.resolve-versions.outputs.integrator_version }}" \
             --app-installer-url "${{ steps.installer.outputs.url }}" \
+            "${MIRROR_ARGS[@]}" \
             --out manifest.json
           echo "----- manifest.json -----"
           cat manifest.json
@@ -1281,6 +1298,18 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
+
+      # Artifacts go up BEFORE the manifest so a client can never fetch a manifest that
+      # references not-yet-uploaded artifacts. Same key → same bytes across the platform
+      # matrix (extensions are platform-independent), so concurrent overwrites are benign.
+      - name: Upload mirrored artifacts to update bucket
+        if: ${{ env.PUBLISH == 'true' }}
+        run: |
+          if [ -d artifacts-mirror ]; then
+            aws s3 cp artifacts-mirror/ "s3://${{ secrets.AWS_UPDATE_S3_BUCKET }}/artifacts/" --recursive
+          else
+            echo "WSO2_UPDATE_ARTIFACTS_URL unset — no mirrored artifacts; manifest points at source URLs."
+          fi
 
       - name: Upload manifest to update bucket
         if: ${{ env.PUBLISH == 'true' }}
