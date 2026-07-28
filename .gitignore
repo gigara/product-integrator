@@ -60,3 +60,5 @@ common/autoinstallers/*/.npmrc
 **/rush-logs/
 .github/workflows/release.yml
 installers/mac/dmg_mount/
+# Local-only update server (manifests + Ballerina service); not part of the product build
+update-server/
