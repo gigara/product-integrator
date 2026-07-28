@@ -1797,7 +1797,7 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser/wso2Update.contribution.ts
-@@ -0,0 +1,395 @@
+@@ -0,0 +1,401 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Microsoft Corporation. All rights reserved.
 + *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -1994,9 +1994,15 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +		const items: IComponentPickItem[] = statuses.map(s => {
 +			const updatable = !!s.availableVersion;
 +			const pending = !!s.pendingVersion;
++			// Show the running version (+ an "updated" hint when it differs from what shipped) and
++			// what's actionable. The bundled version isn't shown on its own anymore — with revert
++			// gone it was only the reset target; it's still used internally as the update floor.
++			const currentVersion = s.activeVersion ?? s.bundledVersion ?? '—';
++			const isUpdated = !!(s.activeVersion && s.bundledVersion && s.activeVersion !== s.bundledVersion);
 +			const detailParts = [
-+				localize('wso2.updates.bundled', "bundled {0}", s.bundledVersion ?? '—'),
-+				s.activeVersion && s.activeVersion !== s.bundledVersion ? localize('wso2.updates.active', "active {0}", s.activeVersion) : undefined,
++				isUpdated
++					? localize('wso2.updates.currentUpdated', "current {0} (updated)", currentVersion)
++					: localize('wso2.updates.current', "current {0}", currentVersion),
 +				s.availableVersion ? localize('wso2.updates.availableItem', "available {0}", s.availableVersion) : undefined,
 +				s.pendingVersion ? localize('wso2.updates.pending', "pending restart {0}", s.pendingVersion) : undefined
 +			].filter(Boolean);
