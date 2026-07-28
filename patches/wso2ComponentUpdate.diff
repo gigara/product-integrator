@@ -256,7 +256,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Updat
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Update.ts
-@@ -0,0 +1,177 @@
+@@ -0,0 +1,168 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Microsoft Corporation. All rights reserved.
 + *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -414,15 +414,6 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Updat
 +	/** Record that the renderer successfully installed a staged extension shadow copy. */
 +	recordExtensionInstalled(id: string, version: string): Promise<void>;
 +
-+	/**
-+	 * Reverts an active runtime override to its previous version (or the bundled version if
-+	 * no previous override remains). Returns true if a revert was applied (requires restart).
-+	 */
-+	revertRuntimeOverride(id: string): Promise<boolean>;
-+
-+	/** Clears a component's active override record (used after the renderer uninstalls an extension shadow copy). */
-+	clearComponentOverride(id: string): Promise<void>;
-+
 +	/** Open the full-app installer download for the current platform (notify + download flow). */
 +	downloadAppInstaller(): Promise<void>;
 +
@@ -438,7 +429,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/wso2ComponentUpdateService.ts
-@@ -0,0 +1,1009 @@
+@@ -0,0 +1,975 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Microsoft Corporation. All rights reserved.
 + *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -1068,45 +1059,11 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		});
 +	}
 +
-+	async revertRuntimeOverride(id: string): Promise<boolean> {
-+		let reverted = false;
-+		const dataFolderHome = path.dirname(this.componentsHome);
-+		this.updateLocalManifest(manifest => {
-+			const entry = manifest.components[id];
-+			if (!entry || !entry.active || entry.active.via === 'user-extension') {
-+				return; // nothing to revert, or an extension shadow (handled by the renderer)
-+			}
-+			const current = entry.active;
-+			const previous = entry.previous;
-+			entry.pending = null;
-+			if (previous && previous.path && fs.existsSync(path.join(dataFolderHome, previous.path))) {
-+				entry.active = { ...previous, healthy: false };
-+			} else {
-+				entry.active = null; // no retained previous → fall back to the bundled version
-+			}
-+			entry.previous = current;
-+			reverted = true;
-+		});
-+		if (reverted) {
-+			this.logService.info(`[wso2Update] reverted runtime override ${id} (restart required)`);
-+		}
-+		return reverted;
-+	}
-+
-+	async clearComponentOverride(id: string): Promise<void> {
-+		this.updateLocalManifest(manifest => {
-+			const entry = manifest.components[id];
-+			if (entry && entry.active) {
-+				entry.previous = entry.active;
-+				entry.active = null;
-+			}
-+		});
-+	}
-+
 +	/**
 +	 * We only reach service construction when the app booted successfully, so any override that
 +	 * was just activated (marked `healthy: false` by the bootstrap) is now known good — flag it
-+	 * healthy and garbage-collect stale versioned directories (keeping active + previous for revert).
++	 * healthy and garbage-collect stale versioned directories (keeping active + previous so the
++	 * bootstrap auto-fallback still has a version to roll back to).
 +	 */
 +	private markHealthyAndGarbageCollect(): void {
 +		const manifest = readLocalManifest(this.componentsHome);
@@ -1452,7 +1409,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2Compone
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2ComponentsManifest.ts
-@@ -0,0 +1,356 @@
+@@ -0,0 +1,383 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Microsoft Corporation. All rights reserved.
 + *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -1600,6 +1557,33 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2Compone
 +			changed = true;
 +			log?.(`Discarded invalid pending component ${id}@${pending.version} (missing ${targetPath ?? 'path'})`);
 +		}
++	}
++
++	// Heal a missing/corrupt active override: fall back to the previous version if its dir still
++	// exists, else to the bundled/seeded baseline (active=null → the `${COMPONENT}` fallback
++	// resolves it). Covers a user deleting the active version dir as a manual recovery step, or a
++	// partial write — post editor-only update the app cannot re-seed, so this keeps a manual delete
++	// from hard-breaking the editor. Extension shadows are excluded (the extension scanner heals
++	// those via semver dedup).
++	for (const [id, entry] of Object.entries(manifest.components)) {
++		const active = entry?.active;
++		if (!active || active.via === 'user-extension') {
++			continue;
++		}
++		const activePath = typeof active.path === 'string' && active.path.length > 0
++			? (path.isAbsolute(active.path) ? active.path : path.join(dataFolderHome, active.path))
++			: undefined;
++		if (!activePath || fs.existsSync(activePath)) {
++			continue; // no versioned dir to check, or it is present — nothing to heal
++		}
++		const prev = entry.previous;
++		const prevPath = prev && typeof prev.path === 'string' && prev.path.length > 0
++			? (path.isAbsolute(prev.path) ? prev.path : path.join(dataFolderHome, prev.path))
++			: undefined;
++		entry.active = (prevPath && fs.existsSync(prevPath)) ? { ...prev!, healthy: true } : null;
++		entry.previous = null;
++		changed = true;
++		log?.(`Healed ${id}: active ${active.version} dir missing → ${entry.active ? 'previous ' + prev!.version : 'bundled'}`);
 +	}
 +
 +	if (changed) {
@@ -1813,7 +1797,7 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser/wso2Update.contribution.ts
-@@ -0,0 +1,443 @@
+@@ -0,0 +1,395 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Microsoft Corporation. All rights reserved.
 + *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -1835,7 +1819,6 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 +import { ContextKeyExpr, IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 +import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
-+import { ExtensionType } from '../../../../platform/extensions/common/extensions.js';
 +import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 +import { ILogService } from '../../../../platform/log/common/log.js';
 +import { INotificationService, IPromptChoice, Severity } from '../../../../platform/notification/common/notification.js';
@@ -1991,7 +1974,6 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +	readonly kind: string;
 +	readonly updatable: boolean;
 +	readonly pending: boolean;
-+	readonly overridden: boolean;
 +}
 +
 +class ShowComponentsAction extends Action2 {
@@ -2008,21 +1990,17 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +		const quickInputService = accessor.get(IQuickInputService);
 +		const notificationService = accessor.get(INotificationService);
 +		const hostService = accessor.get(IHostService);
-+		const dialogService = accessor.get(IDialogService);
-+		const extensionManagementService = accessor.get(IWorkbenchExtensionManagementService);
 +		const statuses = await updateService.getComponentStatuses();
 +		const items: IComponentPickItem[] = statuses.map(s => {
 +			const updatable = !!s.availableVersion;
 +			const pending = !!s.pendingVersion;
-+			const overridden = !!s.overridden;
 +			const detailParts = [
 +				localize('wso2.updates.bundled', "bundled {0}", s.bundledVersion ?? '—'),
 +				s.activeVersion && s.activeVersion !== s.bundledVersion ? localize('wso2.updates.active', "active {0}", s.activeVersion) : undefined,
 +				s.availableVersion ? localize('wso2.updates.availableItem', "available {0}", s.availableVersion) : undefined,
-+				s.pendingVersion ? localize('wso2.updates.pending', "pending restart {0}", s.pendingVersion) : undefined,
-+				(overridden && !updatable && !pending) ? localize('wso2.updates.revertHint', "select to revert to bundled") : undefined
++				s.pendingVersion ? localize('wso2.updates.pending', "pending restart {0}", s.pendingVersion) : undefined
 +			].filter(Boolean);
-+			const icon = updatable ? '$(cloud-download) ' : (pending ? '$(sync) ' : (overridden ? '$(discard) ' : ''));
++			const icon = updatable ? '$(cloud-download) ' : (pending ? '$(sync) ' : '');
 +			return {
 +				label: `${icon}${s.id}`,
 +				description: `(${s.kind})`,
@@ -2030,14 +2008,13 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +				componentId: s.id,
 +				kind: s.kind,
 +				updatable,
-+				pending,
-+				overridden
++				pending
 +			};
 +		});
-+		const anyActionable = items.some(i => i.updatable || i.pending || i.overridden);
++		const anyActionable = items.some(i => i.updatable || i.pending);
 +		const picked = await quickInputService.pick(items, {
 +			placeHolder: anyActionable
-+				? localize('wso2.updates.componentsPlaceholderUpdatable', "Select a component to update, restart, or revert; Esc to close")
++				? localize('wso2.updates.componentsPlaceholderUpdatable', "Select a component to update or restart; Esc to close")
 +				: localize('wso2.updates.componentsPlaceholder', "Installed WSO2 Integrator components")
 +		});
 +		if (!picked) {
@@ -2049,49 +2026,8 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +			notificationService.prompt(Severity.Info, localize('wso2.updates.componentPending', "{0} is downloaded. Restart WSO2 Integrator to finish updating.", picked.componentId), [
 +				{ label: localize('wso2.updates.restartNow', "Restart"), run: () => hostService.restart() }
 +			]);
-+		} else if (picked.overridden) {
-+			await this.revert(picked, { updateService, notificationService, hostService, dialogService, extensionManagementService });
 +		} else {
 +			notificationService.info(localize('wso2.updates.componentUpToDate', "{0} is already up to date.", picked.componentId));
-+		}
-+	}
-+
-+	private async revert(
-+		picked: IComponentPickItem,
-+		services: {
-+			updateService: IWso2ComponentUpdateService;
-+			notificationService: INotificationService;
-+			hostService: IHostService;
-+			dialogService: IDialogService;
-+			extensionManagementService: IWorkbenchExtensionManagementService;
-+		}
-+	): Promise<void> {
-+		const { confirmed } = await services.dialogService.confirm({
-+			message: localize('wso2.updates.revertConfirm', "Revert {0} to the bundled version?", picked.componentId),
-+			primaryButton: localize('wso2.updates.revert', "Revert")
-+		});
-+		if (!confirmed) {
-+			return;
-+		}
-+
-+		if (picked.kind === 'extension') {
-+			// Uninstalling the user-installed shadow copy lets the bundled built-in win again.
-+			const installed = await services.extensionManagementService.getInstalled(ExtensionType.User);
-+			const shadow = installed.find(e => e.identifier.id.toLowerCase() === picked.componentId.toLowerCase());
-+			if (shadow) {
-+				await services.extensionManagementService.uninstall(shadow);
-+			}
-+			await services.updateService.clearComponentOverride(picked.componentId);
-+			services.notificationService.prompt(Severity.Info, localize('wso2.updates.revertReload', "Reload the window to finish reverting {0}.", picked.componentId), [
-+				{ label: localize('wso2.updates.reloadNow', "Reload Window"), run: () => services.hostService.reload() }
-+			]);
-+		} else {
-+			const reverted = await services.updateService.revertRuntimeOverride(picked.componentId);
-+			if (reverted) {
-+				services.notificationService.prompt(Severity.Info, localize('wso2.updates.revertRestart', "Restart WSO2 Integrator to finish reverting {0}.", picked.componentId), [
-+					{ label: localize('wso2.updates.restartNow', "Restart"), run: () => services.hostService.restart() }
-+				]);
-+			}
 +		}
 +	}
 +}
