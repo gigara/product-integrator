@@ -3,7 +3,7 @@
   "channel": "stable",
   "platform": "win32",
   "arch": "x64",
-  "sequence": 101,
+  "sequence": 102,
   "publishedAt": "2026-07-22T00:00:00Z",
   "expiresAt": "2027-07-22T00:00:00Z",
   "app": {
@@ -38,7 +38,7 @@
         }
       },
       "requires": {
-        "app": ">=5.0.0.0"
+        "app": ">=5.0.0"
       },
       "rollout": {
         "percentage": 100
@@ -54,7 +54,7 @@
         "sizeBytes": 79218715
       },
       "requires": {
-        "app": ">=5.0.0.0"
+        "app": ">=5.0.0"
       },
       "rollout": {
         "percentage": 100
