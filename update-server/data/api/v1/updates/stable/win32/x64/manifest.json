@@ -3,7 +3,7 @@
   "channel": "stable",
   "platform": "win32",
   "arch": "x64",
-  "sequence": 100,
+  "sequence": 101,
   "publishedAt": "2026-07-22T00:00:00Z",
   "expiresAt": "2027-07-22T00:00:00Z",
   "app": {
@@ -43,12 +43,29 @@
       "rollout": {
         "percentage": 100
       }
+    },
+    {
+      "id": "wso2.ballerina",
+      "kind": "extension",
+      "version": "5.12.3",
+      "artifact": {
+        "url": "https://github.com/gigara/product-integrator/releases/download/v5.0.0.2/ballerina-5.12.3.vsix",
+        "sha256": "ad1c4c83e016e404cb212878bdb7db3eeb54168be431598a65e09ab6fde3af4d",
+        "sizeBytes": 79218715
+      },
+      "requires": {
+        "app": ">=5.0.0.0"
+      },
+      "rollout": {
+        "percentage": 100
+      }
     }
   ],
   "recommendedSet": {
     "name": "2026-07-win-test",
     "members": {
-      "jre": "3.0.3"
+      "jre": "3.0.3",
+      "wso2.ballerina": "5.12.3"
     }
   }
 }
