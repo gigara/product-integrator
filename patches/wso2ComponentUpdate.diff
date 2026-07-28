@@ -1813,7 +1813,7 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser/wso2Update.contribution.ts
-@@ -0,0 +1,435 @@
+@@ -0,0 +1,443 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Microsoft Corporation. All rights reserved.
 + *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -1824,7 +1824,7 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +import { IAction } from '../../../../base/common/actions.js';
 +import { Codicon } from '../../../../base/common/codicons.js';
 +import { Disposable } from '../../../../base/common/lifecycle.js';
-+import { isWindows } from '../../../../base/common/platform.js';
++import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
 +import { ThemeIcon } from '../../../../base/common/themables.js';
 +import { URI } from '../../../../base/common/uri.js';
 +import { localize, localize2 } from '../../../../nls.js';
@@ -1864,7 +1864,7 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +			enum: ['default', 'manual', 'none'],
 +			enumDescriptions: [
 +				localize('wso2.updates.mode.default', "Check for updates in the background and notify when they are available."),
-+				localize('wso2.updates.mode.manual', "Only check for updates when running the \"Check for Component Updates\" command."),
++				localize('wso2.updates.mode.manual', "Only check for updates when running the \"Check for Updates\" command."),
 +				localize('wso2.updates.mode.none', "Never check for updates.")
 +			],
 +			default: 'default',
@@ -1895,9 +1895,17 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +	constructor() {
 +		super({
 +			id: 'wso2.updates.check',
-+			title: localize2('wso2.updates.check', "Check for Component Updates"),
++			title: localize2('wso2.updates.check', "Check for Updates"),
 +			category: CATEGORY,
-+			f1: true
++			f1: true,
++			// Surface it in the Help menu on Windows/Linux (rendered from MenuId contributions).
++			// macOS already gets a state-aware entry in the application menu via menubar.ts, so
++			// don't duplicate it there.
++			menu: isMacintosh ? undefined : [{
++				id: MenuId.MenubarHelpMenu,
++				group: '6_update',
++				order: 1
++			}]
 +		});
 +	}
 +	async run(accessor: ServicesAccessor): Promise<void> {
@@ -2384,7 +2392,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/menubar/electron-main/menub
 +
 +			default:
 +				return [new MenuItem({
-+					label: this.mnemonicLabel(nls.localize('miWso2CheckForUpdates', "Check for Component &&Updates...")), click: () => setTimeout(() => {
++					label: this.mnemonicLabel(nls.localize('miWso2CheckForUpdates', "Check for &&Updates...")), click: () => setTimeout(() => {
 +						this.wso2UpdateService.checkForUpdates(true);
 +					}, 0)
 +				})];
