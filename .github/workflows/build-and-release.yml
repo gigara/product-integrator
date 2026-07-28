@@ -1285,7 +1285,9 @@ jobs:
       - name: Upload manifest to update bucket
         if: ${{ env.PUBLISH == 'true' }}
         run: |
-          DEST="s3://${{ secrets.AWS_UPDATE_S3_BUCKET }}/api/v1/updates/${CHANNEL}/${{ matrix.platform }}/${{ matrix.arch }}/"
+          # S3 is just storage behind the update server (the client hits the server's
+          # /api/v1/updates route, never S3), so the key needn't mirror the API path.
+          DEST="s3://${{ secrets.AWS_UPDATE_S3_BUCKET }}/manifests/${CHANNEL}/${{ matrix.platform }}/${{ matrix.arch }}/"
           aws s3 cp manifest.json "${DEST}manifest.json" --content-type application/json --cache-control no-cache
           aws s3 cp manifest.json.sig "${DEST}manifest.json.sig" --content-type text/plain --cache-control no-cache
           echo "Published ${CHANNEL}/${{ matrix.platform }}/${{ matrix.arch }} manifest (sequence ${{ github.run_number }})"
