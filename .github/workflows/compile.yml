@@ -27,7 +27,14 @@ on:
 
 permissions:
   id-token: write
-  contents: write     
+  contents: write
+
+env:
+  # Stamp product.commit from the product-integrator ROOT sha (github.sha resolves to the caller's
+  # sha for this reusable workflow), not the lib/vscode submodule sha — so each product release has
+  # a distinct commit for update checks (mac Squirrel compares builds by commit). getVersion()
+  # prefers BUILD_SOURCEVERSION when it is a 40-hex sha.
+  BUILD_SOURCEVERSION: ${{ github.sha }}
 
 jobs:
   resolve-versions:

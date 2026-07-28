@@ -70,7 +70,13 @@ permissions:
   contents: write     
 
 env:
-  awsRunnerId: codebuild-wso2_product-integrator-${{ github.run_id }}-${{ github.run_attempt }}  
+  awsRunnerId: codebuild-wso2_product-integrator-${{ github.run_id }}-${{ github.run_attempt }}
+  # Stamp product.commit from the product-integrator ROOT sha, not the lib/vscode submodule sha.
+  # The submodule rarely changes between product releases, so its sha would collide across
+  # versions — and update checks that key off commit (mac Squirrel compares builds by commit)
+  # would then never see a new build. getVersion() prefers BUILD_SOURCEVERSION when it is a
+  # 40-hex sha (github.sha always is), overriding the submodule git rev-parse default.
+  BUILD_SOURCEVERSION: ${{ github.sha }}
 
 jobs:
   resolve-versions:
