@@ -71,6 +71,16 @@ function substitute(template, vars) {
 	return template.replace(/\{(\w+)\}/g, (_m, key) => (vars[key] !== undefined ? String(vars[key]) : `{${key}}`));
 }
 
+// Guards every value interpolated into a mirror path / CDN URL segment. Rejects path
+// separators, traversal, and URL-hostile characters so a malformed source URL or version
+// can never write outside the mirror dir or produce a broken artifact URL.
+function safeSegment(value, what) {
+	if (!/^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(value) || value.includes('..')) {
+		throw new Error(`Unsafe ${what} for artifact path: '${value}'`);
+	}
+	return value;
+}
+
 // Streams the artifact once: hashes it, and (when mirrorPath is set) writes the same bytes to
 // disk for the CI job to upload to the update bucket.
 async function hashAndSize(url, mirrorPath) {
@@ -211,10 +221,12 @@ async function main() {
 			}
 		}
 
-		const fileName = sourceFile
+		// Decode BEFORE basename: an encoded separator (..%2F) would otherwise survive
+		// basename and decode into a traversal that escapes the mirror dir.
+		const fileName = safeSegment(sourceFile
 			? path.basename(sourceFile)
-			: decodeURIComponent(path.posix.basename(new URL(sourceUrl).pathname));
-		const relPath = `components/${component.id}/${version}/${fileName}`;
+			: path.posix.basename(decodeURIComponent(new URL(sourceUrl).pathname)), 'file name');
+		const relPath = `components/${safeSegment(component.id, 'component id')}/${safeSegment(version, 'version')}/${fileName}`;
 
 		const artifact = {};
 		if (artifactsBase) {
@@ -255,8 +267,8 @@ async function main() {
 	let app;
 	if (args['app-installer-url']) {
 		const sourceUrl = args['app-installer-url'];
-		const fileName = decodeURIComponent(path.posix.basename(new URL(sourceUrl).pathname));
-		const relPath = `app/${appVersion}/${fileName}`;
+		const fileName = safeSegment(path.posix.basename(decodeURIComponent(new URL(sourceUrl).pathname)), 'installer file name');
+		const relPath = `app/${safeSegment(appVersion, 'app version')}/${fileName}`;
 		const installer = { url: artifactsBase ? `${artifactsBase}/${relPath}` : sourceUrl };
 		if (noDownload) {
 			installer.sha256 = 'PLACEHOLDER_NO_DOWNLOAD';
