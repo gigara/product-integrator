@@ -295,8 +295,8 @@ jobs:
           WSO2_UPDATE_PUBLIC_KEY: ${{ secrets.WSO2_UPDATE_PUBLIC_KEY }}
           # macOS-only: stock Squirrel.Mac core-app updates, served by the SAME update server —
           # darwinUpdateService polls {updateUrl}/api/update/{darwin|darwin-arm64}/{quality}/{commit}
-          # (the server's Squirrel endpoint, fed by the squirrel.json metadata published below) and
-          # gets back the editor-only .app zip CDN URL. Windows/Linux never set this, so their
+          # (the server derives the response from the darwin manifest's app.commit/app.squirrel)
+          # and gets back the editor-only .app zip CDN URL. Windows/Linux never set this, so their
           # stock update paths stay off.
           STOCK_UPDATE_URL: ${{ secrets.WSO2_UPDATE_URL }}
         run: |
