@@ -237,11 +237,24 @@ pkgbuild --root "$EXTRACTION_TARGET" \
 sed -i '' "s/version=\"__VERSION__\"/version=\"$VERSION\"/g" "$WORK_DIR/Distribution.xml"
 
 
-# Build the final product archive
-productbuild --distribution "$WORK_DIR/Distribution.xml" \
-             --resources "$WORK_DIR" \
-             --package-path "$WORK_DIR" \
-             "wso2-integrator-$VERSION-$ARCH.pkg"
+# Build the final product archive. Signed with the Developer ID Installer identity
+# when available — an unsigned .pkg cannot be notarized. (App bundles inside are
+# already codesigned with the Application identity; the pkg wrapper needs its own.)
+if [ -n "${MAC_INSTALLER_SIGNING_IDENTITY:-}" ]; then
+    print_info "Signing installer package with: $MAC_INSTALLER_SIGNING_IDENTITY"
+    productbuild --distribution "$WORK_DIR/Distribution.xml" \
+                 --resources "$WORK_DIR" \
+                 --package-path "$WORK_DIR" \
+                 --sign "$MAC_INSTALLER_SIGNING_IDENTITY" \
+                 --timestamp \
+                 "wso2-integrator-$VERSION-$ARCH.pkg"
+else
+    print_warning "MAC_INSTALLER_SIGNING_IDENTITY not set — .pkg will be unsigned (not notarizable)"
+    productbuild --distribution "$WORK_DIR/Distribution.xml" \
+                 --resources "$WORK_DIR" \
+                 --package-path "$WORK_DIR" \
+                 "wso2-integrator-$VERSION-$ARCH.pkg"
+fi
 
 sed -i '' "s/version=\"$VERSION\"/version=\"__VERSION__\"/g" "$WORK_DIR/Distribution.xml"
 
@@ -373,6 +386,13 @@ if [ -f "$WORK_DIR/$DMG_NAME" ]; then
 else
     print_error "Failed to create DMG package"
     exit 1
+fi
+
+# Sign the DMG container itself with the Application identity (the app inside is
+# already signed); recommended for notarization and a cleaner Gatekeeper experience.
+if [ -n "${MAC_SIGNING_IDENTITY:-}" ]; then
+    print_info "Signing DMG with: $MAC_SIGNING_IDENTITY"
+    codesign --force --timestamp --sign "$MAC_SIGNING_IDENTITY" "$WORK_DIR/$DMG_NAME"
 fi
 
 # -------------------------------------------------------------------
