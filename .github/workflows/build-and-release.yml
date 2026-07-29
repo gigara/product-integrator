@@ -575,8 +575,8 @@ jobs:
             echo "AWS_UPDATE_S3_BUCKET not set — skipping Squirrel.Mac payload upload."
             exit 0
           fi
-          # Same artifacts layout as everything else; the Squirrel feed metadata (squirrel.json,
-          # written by publish-update-manifest) points at this exact versioned CDN URL.
+          # Same artifacts layout as everything else; the darwin manifest's app.squirrel.url
+          # (embedded by generate-update-manifest.mjs) points at this exact versioned CDN URL.
           DEST="s3://${{ secrets.AWS_UPDATE_S3_BUCKET }}/artifacts/app/${V}/"
           aws s3 cp "$ZIP" "${DEST}wso2-integrator-${V}-${{ matrix.arch }}-mac.zip" --content-type application/zip --cache-control no-cache
           echo "Published Squirrel.Mac payload for darwin/${{ matrix.arch }} (v${V})"
@@ -1275,6 +1275,7 @@ jobs:
             --sequence "${{ github.run_number }}" \
             --app-version "${{ needs.resolve-versions.outputs.integrator_version }}" \
             --app-installer-url "${{ steps.installer.outputs.url }}" \
+            --app-commit "${{ github.sha }}" \
             --source-flavors "wso2.ballerina=${{ github.event.inputs.ballerina_extension_source || 'marketplace' }},wso2.micro-integrator=${{ github.event.inputs.mi_extension_source || 'marketplace' }}" \
             "${MIRROR_ARGS[@]}" \
             --out manifest.json
@@ -1334,28 +1335,6 @@ jobs:
           aws s3 cp manifest.json.sig "${DEST}manifest.json.sig" --content-type text/plain --cache-control no-cache
           echo "Published ${CHANNEL}/${{ matrix.platform }}/${{ matrix.arch }} manifest (sequence ${{ github.run_number }})"
 
-      # Squirrel.Mac feed metadata: the update server's /api/update/{darwin|darwin-arm64}/{quality}/
-      # {commit} endpoint compares the client's commit against `commit` here and, when different,
-      # returns `url` (the editor-only .app zip on the CDN, uploaded by the mac build job).
-      - name: Publish Squirrel feed metadata (darwin)
-        if: ${{ env.PUBLISH == 'true' && matrix.platform == 'darwin' }}
-        run: |
-          if [ -z "${{ secrets.WSO2_UPDATE_ARTIFACTS_URL }}" ]; then
-            echo "WSO2_UPDATE_ARTIFACTS_URL unset — skipping Squirrel feed metadata."
-            exit 0
-          fi
-          V="${{ needs.resolve-versions.outputs.integrator_version }}"
-          cat > squirrel.json <<EOF
-          {
-            "commit": "${{ github.sha }}",
-            "version": "${V}",
-            "url": "${{ secrets.WSO2_UPDATE_ARTIFACTS_URL }}/app/${V}/wso2-integrator-${V}-${{ matrix.arch }}-mac.zip",
-            "publishedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          }
-          EOF
-          DEST="s3://${{ secrets.AWS_UPDATE_S3_BUCKET }}/manifests/${CHANNEL}/darwin/${{ matrix.arch }}/"
-          aws s3 cp squirrel.json "${DEST}squirrel.json" --content-type application/json --cache-control no-cache
-          echo "Published Squirrel feed metadata for ${CHANNEL}/darwin/${{ matrix.arch }}"
 
   bump-version:
     name: Bump Integrator Version

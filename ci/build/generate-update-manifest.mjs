@@ -268,6 +268,18 @@ async function main() {
 			installer.sizeBytes = sizeBytes;
 		}
 		app = { version: appVersion, minAutoUpdateFromVersion: args['app-min-version'] || undefined, installer };
+		// The commit this build was produced from (product-integrator root sha). The update
+		// server's Squirrel endpoint compares the mac client's commit against this.
+		if (args['app-commit']) {
+			app.commit = args['app-commit'];
+		}
+		// Squirrel.Mac (darwin): embed the CDN URL of the editor-only .app zip (uploaded by the
+		// mac build job to artifacts/app/{version}/, same filename pattern) so the update server
+		// serves the /api/update/darwin* feed straight from this signed manifest — no separate
+		// squirrel.json artifact.
+		if (platform === 'darwin' && artifactsBase) {
+			app.squirrel = { url: `${artifactsBase}/app/${appVersion}/wso2-integrator-${appVersion}-${arch}-mac.zip` };
+		}
 	}
 
 	const recommendedMembers = {};
