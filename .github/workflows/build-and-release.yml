@@ -1283,6 +1283,7 @@ jobs:
           cat manifest.json
 
       - name: cosign-installer
+        if: ${{ env.PUBLISH == 'true' }}
         uses: sigstore/cosign-installer@v3.5.0
 
       # Key-based (not keyless) signing: the client verifies the detached signature against
@@ -1307,6 +1308,7 @@ jobs:
           rm -f cosign.pub
 
       - name: Login to AWS
+        if: ${{ env.PUBLISH == 'true' }}
         uses: aws-actions/configure-aws-credentials@v5
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}

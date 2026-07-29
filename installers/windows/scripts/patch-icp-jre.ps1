@@ -15,15 +15,17 @@ $ErrorActionPreference = 'Stop'
 $icpScript = '.\WixPackage\payload\Integrator\components\icp\bin\icp.bat'
 $depsDir = '.\WixPackage\payload\Integrator\components\dependencies'
 
+# This script only runs in the full profile, right after ICP + JRE extraction — missing
+# inputs mean a broken payload, so fail the build rather than publish an unpatched MSI.
 if (-not (Test-Path $icpScript)) {
-    Write-Host 'Warning: icp.bat not found in ICP bin directory'
-    exit 0
+    Write-Error 'icp.bat not found in ICP bin directory'
+    exit 1
 }
 
 $jreDir = (Get-ChildItem $depsDir -Directory -ErrorAction SilentlyContinue | Select-Object -First 1).Name
 if (-not $jreDir) {
-    Write-Host 'Warning: JRE folder not found in dependencies'
-    exit 0
+    Write-Error 'JRE folder not found in dependencies'
+    exit 1
 }
 
 $content = Get-Content $icpScript -Raw
