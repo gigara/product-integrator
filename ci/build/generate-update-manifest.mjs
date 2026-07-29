@@ -140,6 +140,19 @@ async function main() {
 		throw new Error('--artifacts-base requires --mirror-dir (or --no-download for structure checks)');
 	}
 
+	// Per-component source flavor overrides ("id=flavor,..."): mirror from the SAME source the
+	// build bundled (e.g. wso2.ballerina=github when the build used ballerina_extension_source=
+	// github), so the published artifact can never diverge from the packed one.
+	const sourceFlavors = {};
+	if (typeof args['source-flavors'] === 'string' && args['source-flavors']) {
+		for (const pair of args['source-flavors'].split(',')) {
+			const [id, flavor] = pair.split('=').map(s => s.trim());
+			if (id && flavor) {
+				sourceFlavors[id] = flavor;
+			}
+		}
+	}
+
 	const appVersion = args['app-version'] || versions['integrator.version'];
 	const platformArch = `${platform}-${arch}`;
 
@@ -181,7 +194,18 @@ async function main() {
 		if (component.sourceFile) {
 			sourceFile = path.join(REPO_ROOT, substitute(component.sourceFile, { ...substitutionVars, version }));
 		} else {
-			sourceUrl = substitute(component.url, { ...substitutionVars, version });
+			// 'marketplace' (or no flavor) is the default `url`; other flavors must be declared
+			// in the component's `sources` map — fail loudly rather than silently publishing
+			// from a different source than the build bundled.
+			const flavor = sourceFlavors[component.id];
+			let urlTemplate = component.url;
+			if (flavor && flavor !== 'marketplace') {
+				urlTemplate = component.sources?.[flavor];
+				if (!urlTemplate) {
+					throw new Error(`Cannot render ${component.id}: no source URL for flavor '${flavor}'`);
+				}
+			}
+			sourceUrl = substitute(urlTemplate, { ...substitutionVars, version });
 			if (sourceUrl.includes('{')) {
 				throw new Error(`Cannot render ${component.id}: unresolved URL placeholder in '${sourceUrl}'`);
 			}

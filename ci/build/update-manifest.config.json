@@ -1,5 +1,5 @@
 {
-  "_comment": "Declares the components published to the WSO2 Integrator update server. generate-update-manifest.mjs renders a signed manifest per (channel, platform, arch) from this + component-versions.properties. `url` is the SOURCE the CI publish job fetches from (vendor releases / open-vsx); with --artifacts-base every artifact is mirrored to the update bucket and the manifest points clients at the CDN, so clients never touch these hosts. `sourceFile` (repo-relative, for locally built artifacts like the WI extension VSIX) replaces `url` and requires mirroring. Version comes from `versionKey` (component-versions.properties) or `versionFromPackageJson`. URL placeholders: {version}, {ballerinaPlatform}, {jrePlatform}. Requires placeholders: {appVersion}, {ballerinaVersion}, {icpVersion}, {jreVersion}. Client-facing hosts must be on the allowlist (wso2ComponentUpdateService.ts ALLOWED_HOST_SUFFIXES).",
+  "_comment": "Declares the components published to the WSO2 Integrator update server. generate-update-manifest.mjs renders a signed manifest per (channel, platform, arch) from this + component-versions.properties. `url` is the SOURCE the CI publish job fetches from (vendor releases / open-vsx); with --artifacts-base every artifact is mirrored to the update bucket and the manifest points clients at the CDN, so clients never touch these hosts. `sourceFile` (repo-relative, for locally built artifacts like the WI extension VSIX) replaces `url` and requires mirroring. `sources` maps alternate source flavors (e.g. github) selected per component via --source-flavors, so the published artifact comes from the SAME source the build bundled (ballerina_extension_source / mi_extension_source workflow inputs). Version comes from `versionKey` (component-versions.properties) or `versionFromPackageJson`. URL placeholders: {version}, {ballerinaPlatform}, {jrePlatform}. Requires placeholders: {appVersion}, {ballerinaVersion}, {icpVersion}, {jreVersion}. Client-facing hosts must be on the allowlist (wso2ComponentUpdateService.ts ALLOWED_HOST_SUFFIXES).",
   "platformTokens": {
     "ballerina": {
       "darwin-x64": "macos",
@@ -43,6 +43,9 @@
       "kind": "extension",
       "versionKey": "ballerina.extension.version",
       "url": "https://open-vsx.org/api/wso2/ballerina/{version}/file/wso2.ballerina-{version}.vsix",
+      "sources": {
+        "github": "https://github.com/wso2/ballerina-vscode/releases/download/v{version}/ballerina-{version}.vsix"
+      },
       "requires": { "app": ">={appVersion}", "ballerina-runtime": ">={ballerinaVersion}" },
       "recommended": true
     },
@@ -51,6 +54,9 @@
       "kind": "extension",
       "versionKey": "wso2.micro-integrator.extension.version",
       "url": "https://open-vsx.org/api/wso2/micro-integrator/{version}/file/wso2.micro-integrator-{version}.vsix",
+      "sources": {
+        "github": "https://github.com/wso2/mi-vscode/releases/download/v{version}/micro-integrator-{version}.vsix"
+      },
       "requires": { "app": ">={appVersion}", "icp": ">={icpVersion}" },
       "recommended": true
     },

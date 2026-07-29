@@ -1275,6 +1275,7 @@ jobs:
             --sequence "${{ github.run_number }}" \
             --app-version "${{ needs.resolve-versions.outputs.integrator_version }}" \
             --app-installer-url "${{ steps.installer.outputs.url }}" \
+            --source-flavors "wso2.ballerina=${{ github.event.inputs.ballerina_extension_source || 'marketplace' }},wso2.micro-integrator=${{ github.event.inputs.mi_extension_source || 'marketplace' }}" \
             "${MIRROR_ARGS[@]}" \
             --out manifest.json
           echo "----- manifest.json -----"
