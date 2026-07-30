@@ -60,8 +60,3 @@ common/autoinstallers/*/.npmrc
 **/rush-logs/
 .github/workflows/release.yml
 installers/mac/dmg_mount/
-# Local-only update server (manifests + Ballerina service); not part of the product build
-update-server/
-
-# Channel-promotion workflow held back for now (kept local, not committed)
-.github/workflows/promote-channel.yml
