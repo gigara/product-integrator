@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "channel": "stable",
+  "platform": "linux",
+  "arch": "x64",
+  "sequence": 42,
+  "publishedAt": "2026-07-09T10:00:00Z",
+  "expiresAt": "2026-10-09T10:00:00Z",
+  "app": {
+    "version": "5.0.1.0",
+    "minAutoUpdateFromVersion": "5.0.0.0",
+    "installer": {
+      "url": "https://github.com/wso2/product-integrator/releases/download/v5.0.1.0/wso2-integrator_5.0.1.0_amd64.deb",
+      "sha256": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef0",
+      "sizeBytes": 240000000,
+      "signature": {
+        "sigUrl": "https://github.com/wso2/product-integrator/releases/download/v5.0.1.0/wso2-integrator_5.0.1.0_amd64.deb.sig",
+        "certUrl": "https://github.com/wso2/product-integrator/releases/download/v5.0.1.0/wso2-integrator_5.0.1.0_amd64.deb.pem"
+      }
+    },
+    "releaseNotesUrl": "https://wso2.com/integrator/release-notes/5.0.1.0",
+    "rollout": { "percentage": 100 }
+  },
+  "components": [
+    {
+      "id": "wso2.ballerina",
+      "kind": "extension",
+      "version": "5.13.0",
+      "artifact": {
+        "url": "https://github.com/wso2/ballerina-vscode/releases/download/v5.13.0/ballerina-5.13.0.vsix",
+        "sha256": "cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34",
+        "sizeBytes": 41000000,
+        "signature": {
+          "sigUrl": "https://github.com/wso2/ballerina-vscode/releases/download/v5.13.0/ballerina-5.13.0.vsix.sig",
+          "certUrl": "https://github.com/wso2/ballerina-vscode/releases/download/v5.13.0/ballerina-5.13.0.vsix.pem"
+        }
+      },
+      "requires": {
+        "app": ">=5.0.0.0 <6",
+        "ballerina-runtime": ">=2201.13.5"
+      },
+      "rollout": { "percentage": 100 }
+    },
+    {
+      "id": "ballerina-runtime",
+      "kind": "runtime",
+      "version": "2201.13.5",
+      "artifact": {
+        "url": "https://github.com/ballerina-platform/ballerina-distribution/releases/download/v2201.13.5/ballerina-2201.13.5-swan-lake-linux.zip",
+        "sha256": "ef56ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34ef56",
+        "sizeBytes": 330000000,
+        "signature": {
+          "sigUrl": "https://github.com/ballerina-platform/ballerina-distribution/releases/download/v2201.13.5/ballerina-2201.13.5-swan-lake-linux.zip.sig",
+          "certUrl": "https://github.com/ballerina-platform/ballerina-distribution/releases/download/v2201.13.5/ballerina-2201.13.5-swan-lake-linux.zip.pem"
+        }
+      },
+      "requires": { "app": ">=5.0.0.0", "jre": ">=3.0.2" },
+      "rollout": { "percentage": 25 }
+    }
+  ],
+  "recommendedSet": {
+    "name": "2026-07-train",
+    "members": {
+      "wso2.ballerina": "5.13.0",
+      "ballerina-runtime": "2201.13.5"
+    }
+  }
+}
