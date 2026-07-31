@@ -191,6 +191,8 @@ jobs:
       # toolchains we never use (~25 GB). Skipped on the self-hosted runners, which have the room.
       - name: Free disk space
         if: ${{ !inputs.runOnAWS }}
+        # This job defaults to lib/vscode, which does not exist until the checkout below.
+        working-directory: .
         run: |
           echo "Before:"; df -h / | tail -1
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
