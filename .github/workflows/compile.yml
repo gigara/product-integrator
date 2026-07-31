@@ -185,6 +185,20 @@ jobs:
       run:
         working-directory: lib/vscode
     steps:
+      # GitHub-hosted runners ship ~14 GB free, which this build exhausts: the vscode compile plus
+      # the bundled Ballerina/JRE/ICP payloads and the per-platform client bundles overflow it and
+      # the Linux client build dies with `ENOSPC: no space left on device`. Reclaim the preinstalled
+      # toolchains we never use (~25 GB). Skipped on the self-hosted runners, which have the room.
+      - name: Free disk space
+        if: ${{ !inputs.runOnAWS }}
+        run: |
+          echo "Before:"; df -h / | tail -1
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/powershell /usr/share/swift \
+                      /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          echo "After:"; df -h / | tail -1
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
