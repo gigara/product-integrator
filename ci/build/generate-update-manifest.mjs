@@ -96,8 +96,22 @@ function safeSegment(value, what) {
 
 // Streams the artifact once: hashes it, and (when mirrorPath is set) writes the same bytes to
 // disk for the CI job to upload to the update bucket.
+// Fetch that can also read release assets from a PRIVATE GitHub repo (the enterprise mirror we
+// build test releases on). Those need an Authorization header, but GitHub answers with a redirect
+// to object storage that rejects a second auth mechanism — so authenticate the first request only
+// and follow the redirect bare.
+async function fetchArtifact(url) {
+	const token = process.env['GITHUB_TOKEN'];
+	if (!token || !new URL(url).hostname.endsWith('github.com')) {
+		return fetch(url, { redirect: 'follow' });
+	}
+	const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, redirect: 'manual' });
+	const location = res.status >= 300 && res.status < 400 ? res.headers.get('location') : undefined;
+	return location ? fetch(location, { redirect: 'follow' }) : res;
+}
+
 async function hashAndSize(url, mirrorPath) {
-	const res = await fetch(url, { redirect: 'follow' });
+	const res = await fetchArtifact(url);
 	if (!res.ok || !res.body) {
 		throw new Error(`Failed to download ${url}: HTTP ${res.status}`);
 	}

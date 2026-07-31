@@ -260,6 +260,9 @@ jobs:
       run:
         working-directory: lib/vscode
     strategy:
+      # The two arches are independent ~40-minute builds; with fail-fast a stumble on one
+      # cancels a perfectly good build of the other and both have to be redone.
+      fail-fast: false
       matrix:
         include:
           - arch: arm64
@@ -1511,6 +1514,10 @@ jobs:
       # and the manifest points clients at the CDN only — no open-vsx/github in client URLs.
       - name: Generate manifest
         if: ${{ env.PUBLISH == 'true' }}
+        env:
+          # Lets the generator hash release assets on a private repo (the enterprise mirror);
+          # public repos serve them unauthenticated and ignore this.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           MIRROR_ARGS=()
           if [ -n "${{ secrets.WSO2_UPDATE_ARTIFACTS_URL }}" ]; then
