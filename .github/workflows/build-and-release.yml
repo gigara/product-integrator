@@ -588,6 +588,7 @@ jobs:
           name: Product-Integrator-Darwin-DMG-${{ matrix.arch }}
           path: |
             installers/mac/*.dmg
+            installers/mac/*-mac.zip
           if-no-files-found: error
 
       - name: cosign-installer
@@ -1256,7 +1257,13 @@ jobs:
             linux-x64)    FILE="wso2-integrator_${V}_amd64-update.deb" ;;
             *) echo "Unsupported platform/arch"; exit 1 ;;
           esac
-          echo "url=https://github.com/${{ github.repository }}/releases/download/v${V}/${FILE}" >> "$GITHUB_OUTPUT"
+          BASE="https://github.com/${{ github.repository }}/releases/download/v${V}"
+          echo "url=${BASE}/${FILE}" >> "$GITHUB_OUTPUT"
+          # Squirrel.Mac payload fallback for when no CDN is configured: the editor-only .app zip
+          # is also published as a release asset, so mac in-place updates are testable pre-CDN.
+          if [ "${{ matrix.platform }}" = "darwin" ]; then
+            echo "squirrel_url=${BASE}/wso2-integrator-${V}-${{ matrix.arch }}-mac.zip" >> "$GITHUB_OUTPUT"
+          fi
 
       # WSO2_UPDATE_ARTIFACTS_URL = the CDN base fronting s3://$AWS_UPDATE_S3_BUCKET/artifacts.
       # When set, every artifact (components + app installer) is mirrored into artifacts-mirror/
@@ -1276,6 +1283,7 @@ jobs:
             --app-version "${{ needs.resolve-versions.outputs.integrator_version }}" \
             --app-installer-url "${{ steps.installer.outputs.url }}" \
             --app-commit "${{ github.sha }}" \
+            --app-squirrel-url "${{ steps.installer.outputs.squirrel_url }}" \
             --source-flavors "wso2.ballerina=${{ github.event.inputs.ballerina_extension_source || 'marketplace' }},wso2.micro-integrator=${{ github.event.inputs.mi_extension_source || 'marketplace' }}" \
             "${MIRROR_ARGS[@]}" \
             --out manifest.json
@@ -1306,6 +1314,19 @@ jobs:
           printf '%s' "$COSIGN_PUBLIC_KEY" > cosign.pub
           cosign verify-blob --key cosign.pub --signature manifest.json.sig manifest.json
           rm -f cosign.pub
+
+      # Also expose the signed manifest as a downloadable artifact: until the bucket/CDN is
+      # provisioned it has to be mounted on the update server by hand, and digging it out of
+      # the job log is awkward.
+      - name: Upload manifest artifact
+        if: ${{ env.PUBLISH == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-manifest-${{ env.CHANNEL }}-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            manifest.json
+            manifest.json.sig
+          if-no-files-found: error
 
       - name: Login to AWS
         if: ${{ env.PUBLISH == 'true' }}

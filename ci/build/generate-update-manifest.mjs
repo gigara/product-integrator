@@ -305,12 +305,18 @@ async function main() {
 		if (args['app-commit']) {
 			app.commit = args['app-commit'];
 		}
-		// Squirrel.Mac (darwin): embed the CDN URL of the editor-only .app zip (uploaded by the
-		// mac build job to artifacts/app/{version}/, same filename pattern) so the update server
+		// Squirrel.Mac (darwin): embed the URL of the editor-only .app zip so the update server
 		// serves the /api/update/darwin* feed straight from this signed manifest — no separate
-		// squirrel.json artifact.
-		if (platform === 'darwin' && artifactsBase) {
-			app.squirrel = { url: `${artifactsBase}/app/${appVersion}/wso2-integrator-${appVersion}-${arch}-mac.zip` };
+		// squirrel.json artifact. Prefer the mirrored CDN copy (uploaded by the mac build job to
+		// artifacts/app/{version}/ with this exact name); fall back to an explicitly supplied URL
+		// (e.g. the GitHub release asset) so mac updates are testable before a CDN exists.
+		if (platform === 'darwin') {
+			const zipName = `wso2-integrator-${safeSegment(appVersion, 'app version')}-${arch}-mac.zip`;
+			if (artifactsBase) {
+				app.squirrel = { url: `${artifactsBase}/app/${appVersion}/${zipName}` };
+			} else if (typeof args['app-squirrel-url'] === 'string' && args['app-squirrel-url']) {
+				app.squirrel = { url: args['app-squirrel-url'] };
+			}
 		}
 	}
 
