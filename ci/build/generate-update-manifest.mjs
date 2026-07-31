@@ -202,6 +202,13 @@ async function main() {
 
 	const components = [];
 	for (const component of config.components) {
+		// Components that only exist as a repo-local build artifact (no public source URL) can
+		// only be published when mirroring is on. Without a CDN configured, skip them LOUDLY
+		// rather than failing the whole manifest — the rest of the set still publishes.
+		if (component.sourceFile && !artifactsBase) {
+			process.stderr.write(`SKIPPING ${component.id}: needs --artifacts-base (no public source URL); it will not be offered as an update\n`);
+			continue;
+		}
 		const version = resolveVersion(component);
 		// Fail rather than skip: a declared component that can't be rendered would otherwise
 		// produce a signed-but-incomplete manifest (and a recommendedSet referencing it), which
@@ -307,10 +314,13 @@ async function main() {
 		}
 	}
 
+	// Only reference components that were actually emitted above, so the recommended set can
+	// never point at a component missing from the manifest (e.g. one skipped for lack of a CDN).
+	const emittedIds = new Set(components.map(c => c.id));
 	const recommendedMembers = {};
 	for (const component of config.components) {
 		const version = resolveVersion(component);
-		if (component.recommended && version) {
+		if (component.recommended && version && emittedIds.has(component.id)) {
 			recommendedMembers[component.id] = version;
 		}
 	}
