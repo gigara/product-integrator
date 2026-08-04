@@ -96,16 +96,36 @@ function safeSegment(value, what) {
 
 // Streams the artifact once: hashes it, and (when mirrorPath is set) writes the same bytes to
 // disk for the CI job to upload to the update bucket.
-// Fetch that can also read release assets from a PRIVATE GitHub repo (the enterprise mirror we
-// build test releases on). Those need an Authorization header, but GitHub answers with a redirect
-// to object storage that rejects a second auth mechanism — so authenticate the first request only
-// and follow the redirect bare.
+// Fetch an artifact, coping with release assets on a PRIVATE GitHub repo (the enterprise mirror
+// we build test releases on). A token on the /releases/download/ browser URL is not enough there —
+// GitHub returns 404 for it regardless — so resolve the asset through the API and fetch it by id
+// with an octet-stream Accept header. The API then redirects to object storage, which rejects a
+// request carrying a second auth mechanism, so authenticate the first hop only and follow bare.
 async function fetchArtifact(url) {
 	const token = process.env['GITHUB_TOKEN'];
-	if (!token || !new URL(url).hostname.endsWith('github.com')) {
+	const parsed = new URL(url);
+	const release = token && parsed.hostname === 'github.com'
+		? /^\/([^/]+)\/([^/]+)\/releases\/download\/([^/]+)\/(.+)$/.exec(parsed.pathname)
+		: undefined;
+	if (!release) {
 		return fetch(url, { redirect: 'follow' });
 	}
-	const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, redirect: 'manual' });
+	const [, owner, repo, tag, file] = release;
+	const meta = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases/tags/${tag}`, {
+		headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' }
+	});
+	if (!meta.ok) {
+		throw new Error(`Failed to look up release ${tag} in ${owner}/${repo}: HTTP ${meta.status}`);
+	}
+	const wanted = decodeURIComponent(file);
+	const asset = ((await meta.json()).assets ?? []).find(a => a.name === wanted);
+	if (!asset) {
+		throw new Error(`Release ${tag} in ${owner}/${repo} has no asset named '${wanted}'`);
+	}
+	const res = await fetch(asset.url, {
+		headers: { Authorization: `Bearer ${token}`, Accept: 'application/octet-stream' },
+		redirect: 'manual'
+	});
 	const location = res.status >= 300 && res.status < 400 ? res.headers.get('location') : undefined;
 	return location ? fetch(location, { redirect: 'follow' }) : res;
 }
