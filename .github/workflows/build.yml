@@ -586,11 +586,35 @@ jobs:
           security create-keychain -p "$KC_PASS" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KC_PASS" "$KEYCHAIN"
+          # Sanity-check the decoded secret before importing: a PKCS#12 is a DER SEQUENCE, so it
+          # must start with 0x30. This separates "secret was mangled/truncated in transit" from
+          # "password does not match" — `security import` reports both as MAC verification failed.
+          check_p12() {
+            local f="$1" label="$2"
+            local size; size=$(wc -c < "$f" | tr -d ' ')
+            echo "$label: decoded $size bytes"
+            if [ "$size" -lt 100 ]; then
+              echo "::error::$label decoded to only $size bytes — the secret is empty or truncated, not base64 of a .p12"
+              exit 1
+            fi
+            if [ "$(head -c1 "$f" | od -An -tx1 | tr -d ' \n')" != "30" ]; then
+              echo "::error::$label does not look like a PKCS#12/DER file — check the secret holds base64 of a .p12 (not a .cer, and no stray characters)"
+              exit 1
+            fi
+          }
           echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/app_cert.p12"
-          security import "$RUNNER_TEMP/app_cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          check_p12 "$RUNNER_TEMP/app_cert.p12" "MACOS_CERTIFICATE"
+          if ! security import "$RUNNER_TEMP/app_cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign; then
+            echo "::error::Importing MACOS_CERTIFICATE failed. The file decoded correctly, so MACOS_CERTIFICATE_PASSWORD does not match this .p12."
+            exit 1
+          fi
           if [ -n "$MACOS_INSTALLER_CERTIFICATE" ]; then
             echo "$MACOS_INSTALLER_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/installer_cert.p12"
-            security import "$RUNNER_TEMP/installer_cert.p12" -k "$KEYCHAIN" -P "$MACOS_INSTALLER_CERTIFICATE_PASSWORD" -T /usr/bin/productbuild -T /usr/bin/productsign
+            check_p12 "$RUNNER_TEMP/installer_cert.p12" "MACOS_INSTALLER_CERTIFICATE"
+            if ! security import "$RUNNER_TEMP/installer_cert.p12" -k "$KEYCHAIN" -P "$MACOS_INSTALLER_CERTIFICATE_PASSWORD" -T /usr/bin/productbuild -T /usr/bin/productsign; then
+              echo "::error::Importing MACOS_INSTALLER_CERTIFICATE failed. The file decoded correctly, so MACOS_INSTALLER_CERTIFICATE_PASSWORD does not match this .p12."
+              exit 1
+            fi
           fi
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PASS" "$KEYCHAIN" >/dev/null
