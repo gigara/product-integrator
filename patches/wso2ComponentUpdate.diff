@@ -1881,7 +1881,7 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser/wso2Update.contribution.ts
-@@ -0,0 +1,414 @@
+@@ -0,0 +1,448 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -1919,8 +1919,11 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 +import { ILogService } from '../../../../platform/log/common/log.js';
 +import { INotificationService, IPromptChoice, Severity } from '../../../../platform/notification/common/notification.js';
++import product from '../../../../platform/product/common/product.js';
 +import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 +import { Registry } from '../../../../platform/registry/common/platform.js';
++import { IUpdateService, StateType } from '../../../../platform/update/common/update.js';
++import { CONTEXT_UPDATE_STATE } from '../../update/browser/update.js';
 +import { IWso2ComponentUpdateService, Wso2UpdateState, Wso2UpdateStateType } from '../../../../platform/wso2Update/common/wso2Update.js';
 +import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
 +import { IWorkbenchExtensionManagementService } from '../../../services/extensionManagement/common/extensionManagement.js';
@@ -1930,6 +1933,15 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +const WSO2_UPDATES_AVAILABLE = new RawContextKey<boolean>(WSO2_UPDATES_AVAILABLE_KEY, false);
 +
 +const CATEGORY = localize2('wso2.updates.category', "WSO2 Integrator");
++
++/**
++ * Whether Squirrel.Mac owns core-app updates, which is where the stock "Check for Updates..."
++ * command and menu entry become the single ones users see. Ours then yields the Command Palette to
++ * it (unless the stock updater turns out to be disabled — see the action's precondition) and
++ * Wso2UpdateContribution piggybacks the component check onto the stock explicit check instead.
++ * Mirrors the same gate in menubar.ts and wso2ComponentUpdateService.resolveAppUpdate().
++ */
++const stockUpdateServiceOwnsChecks = isMacintosh && !!product.updateUrl;
 +
 +//#region configuration
 +
@@ -1978,6 +1990,13 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +			title: localize2('wso2.updates.check', "Check for Updates"),
 +			category: CATEGORY,
 +			f1: true,
++			// Where the stock command already offers the check, ours would be an indistinguishable
++			// duplicate in the Command Palette — same category, near-identical title. Yield to it,
++			// but come back when the stock updater is disabled (update.mode "none", a policy
++			// override, a build from sources), since it contributes no entry in those states.
++			precondition: stockUpdateServiceOwnsChecks
++				? ContextKeyExpr.or(CONTEXT_UPDATE_STATE.isEqualTo(StateType.Disabled), CONTEXT_UPDATE_STATE.isEqualTo(StateType.Uninitialized))
++				: undefined,
 +			// Surface it in the Help menu on Windows/Linux (rendered from MenuId contributions).
 +			// macOS already gets a state-aware entry in the application menu via menubar.ts, so
 +			// don't duplicate it there.
@@ -2197,7 +2216,8 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +		@IWorkbenchExtensionManagementService private readonly extensionManagementService: IWorkbenchExtensionManagementService,
 +		@IActionViewItemService actionViewItemService: IActionViewItemService,
 +		@IDialogService private readonly dialogService: IDialogService,
-+		@ILogService private readonly logService: ILogService
++		@ILogService private readonly logService: ILogService,
++		@IUpdateService stockUpdateService: IUpdateService
 +	) {
 +		super();
 +
@@ -2212,6 +2232,20 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +
 +		this._register(this.updateService.onStateChange(state => this.onStateChange(state)));
 +		this.updateService.getState().then(state => this.onStateChange(state, true), err => this.logService.error('[wso2Update] getState failed', err));
++
++		// Where the stock command is the only "Check for Updates" users see, it has to check
++		// components too. Both the Command Palette entry and the application-menu item route
++		// through the stock service, so hooking its explicit check covers both surfaces. Results
++		// surface through onStateChange above; the stock service reports the core-app outcome
++		// itself, so this deliberately adds no "up to date" notification of its own.
++		if (stockUpdateServiceOwnsChecks) {
++			this._register(stockUpdateService.onStateChange(state => {
++				if (state.type === StateType.CheckingForUpdates && state.explicit) {
++					this.updateService.checkForUpdates(true)
++						.catch(err => this.logService.error('[wso2Update] component check alongside the stock check failed', err));
++				}
++			}));
++		}
 +	}
 +
 +	private onStateChange(state: Wso2UpdateState, isInitial = false): void {
@@ -2395,7 +2429,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/menubar/electron-main/menub
  
  		if (preferences) {
  			actions.push(...[
-@@ -553,6 +562,69 @@ export class Menubar extends Disposable
+@@ -553,6 +562,76 @@ export class Menubar extends Disposable
  			updateItems.forEach(i => menu.append(i));
  			menu.append(__separator__());
  		}
@@ -2414,7 +2448,14 @@ Index: product-integrator/lib/vscode/src/vs/platform/menubar/electron-main/menub
 +	 * render a second identical entry of our own.
 +	 */
 +	private get stockUpdateServiceOwnsChecks(): boolean {
-+		return isMacintosh && !!this.productService.updateUrl;
++		if (!isMacintosh || !this.productService.updateUrl) {
++			return false;
++		}
++		// A disabled or not-yet-initialized stock updater contributes no entry of its own (see the
++		// default case in getUpdateMenuItems), so ours has to stay — otherwise "update.mode": "none",
++		// a policy override or a build from sources would leave no way to check at all.
++		const type = this.updateService.state.type;
++		return type !== StateType.Disabled && type !== StateType.Uninitialized;
 +	}
 +
 +	private getWso2UpdateMenuItems(): MenuItem[] {
@@ -2465,17 +2506,15 @@ Index: product-integrator/lib/vscode/src/vs/platform/menubar/electron-main/menub
  	}
  
  	private createOpenRecentMenuItem(item: IMenubarMenuRecentItemAction): MenuItem {
-@@ -638,6 +710,10 @@ export class Menubar extends Disposable
+@@ -637,6 +716,8 @@ export class Menubar extends Disposable
+ 				return [new MenuItem({
  					label: this.mnemonicLabel(nls.localize('miCheckForUpdates', "Check for &&Updates...")), click: () => setTimeout(() => {
  						this.reportMenuActionTelemetry('CheckForUpdate');
++						// Where this is the only "Check for Updates" entry, the component check rides
++						// along on the explicit stock check — see Wso2UpdateContribution.
  						this.updateService.checkForUpdates(true);
-+						if (this.stockUpdateServiceOwnsChecks) {
-+							// Single entry on macOS: check bundled components in the same click.
-+							this.wso2UpdateService.checkForUpdates(true);
-+						}
  					}, 0)
  				})];
- 
 Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser/media/wso2Update.css
 ===================================================================
 --- /dev/null
