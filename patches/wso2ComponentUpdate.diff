@@ -2395,7 +2395,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/menubar/electron-main/menub
  
  		if (preferences) {
  			actions.push(...[
-@@ -553,6 +562,56 @@ export class Menubar extends Disposable
+@@ -553,6 +562,69 @@ export class Menubar extends Disposable
  			updateItems.forEach(i => menu.append(i));
  			menu.append(__separator__());
  		}
@@ -2405,6 +2405,16 @@ Index: product-integrator/lib/vscode/src/vs/platform/menubar/electron-main/menub
 +			wso2UpdateItems.forEach(i => menu.append(i));
 +			menu.append(__separator__());
 +		}
++	}
++
++	/**
++	 * On macOS with the stock feed configured, Squirrel.Mac owns core-app updates — the same gate
++	 * wso2ComponentUpdateService.resolveAppUpdate() applies. There the stock "Check for Updates..."
++	 * entry is the single one users see, and it kicks off the component check too, so we must not
++	 * render a second identical entry of our own.
++	 */
++	private get stockUpdateServiceOwnsChecks(): boolean {
++		return isMacintosh && !!this.productService.updateUrl;
 +	}
 +
 +	private getWso2UpdateMenuItems(): MenuItem[] {
@@ -2443,6 +2453,9 @@ Index: product-integrator/lib/vscode/src/vs/platform/menubar/electron-main/menub
 +				})];
 +
 +			default:
++				if (this.stockUpdateServiceOwnsChecks) {
++					return [];
++				}
 +				return [new MenuItem({
 +					label: this.mnemonicLabel(nls.localize('miWso2CheckForUpdates', "Check for &&Updates...")), click: () => setTimeout(() => {
 +						this.wso2UpdateService.checkForUpdates(true);
@@ -2452,6 +2465,17 @@ Index: product-integrator/lib/vscode/src/vs/platform/menubar/electron-main/menub
  	}
  
  	private createOpenRecentMenuItem(item: IMenubarMenuRecentItemAction): MenuItem {
+@@ -638,6 +710,10 @@ export class Menubar extends Disposable
+ 					label: this.mnemonicLabel(nls.localize('miCheckForUpdates', "Check for &&Updates...")), click: () => setTimeout(() => {
+ 						this.reportMenuActionTelemetry('CheckForUpdate');
+ 						this.updateService.checkForUpdates(true);
++						if (this.stockUpdateServiceOwnsChecks) {
++							// Single entry on macOS: check bundled components in the same click.
++							this.wso2UpdateService.checkForUpdates(true);
++						}
+ 					}, 0)
+ 				})];
+ 
 Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser/media/wso2Update.css
 ===================================================================
 --- /dev/null

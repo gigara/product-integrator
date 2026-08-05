@@ -207,7 +207,11 @@ fi)
     "wso2UpdateUrl": "${WSO2_UPDATE_URL}",
     "wso2UpdatePublicKey": "${WSO2_UPDATE_PUBLIC_KEY}",
     "updateUrl": "${STOCK_UPDATE_URL}",
+$(if [ -n "${DARWIN_UNIVERSAL_ASSET_ID}" ]; then
+cat <<DARWIN_UNIVERSAL_ASSET_ID_ENTRY
     "darwinUniversalAssetId": "${DARWIN_UNIVERSAL_ASSET_ID}",
+DARWIN_UNIVERSAL_ASSET_ID_ENTRY
+fi)
     "bundledComponents": {
       "ballerina-runtime": "${BALLERINA_RUNTIME_VERSION}",
       "jre": "${BALLERINA_JRE_VERSION}",
