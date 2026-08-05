@@ -1881,7 +1881,7 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser/wso2Update.contribution.ts
-@@ -0,0 +1,448 @@
+@@ -0,0 +1,498 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -1903,8 +1903,9 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +import * as dom from '../../../../base/browser/dom.js';
 +import { BaseActionViewItem, IBaseActionViewItemOptions } from '../../../../base/browser/ui/actionbar/actionViewItems.js';
 +import { IAction } from '../../../../base/common/actions.js';
++import { raceTimeout } from '../../../../base/common/async.js';
 +import { Codicon } from '../../../../base/common/codicons.js';
-+import { Disposable } from '../../../../base/common/lifecycle.js';
++import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 +import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
 +import { ThemeIcon } from '../../../../base/common/themables.js';
 +import { URI } from '../../../../base/common/uri.js';
@@ -1922,7 +1923,7 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +import product from '../../../../platform/product/common/product.js';
 +import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 +import { Registry } from '../../../../platform/registry/common/platform.js';
-+import { IUpdateService, StateType } from '../../../../platform/update/common/update.js';
++import { IUpdateService, State as UpdateState, StateType } from '../../../../platform/update/common/update.js';
 +import { CONTEXT_UPDATE_STATE } from '../../update/browser/update.js';
 +import { IWso2ComponentUpdateService, Wso2UpdateState, Wso2UpdateStateType } from '../../../../platform/wso2Update/common/wso2Update.js';
 +import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
@@ -2206,6 +2207,7 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +
 +	private readonly availableContext: IContextKey<boolean>;
 +	private lastNotifiedKey: string | undefined;
++	private explicitCheckInFlight = false;
 +
 +	constructor(
 +		@IWso2ComponentUpdateService private readonly updateService: IWso2ComponentUpdateService,
@@ -2235,17 +2237,65 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +
 +		// Where the stock command is the only "Check for Updates" users see, it has to check
 +		// components too. Both the Command Palette entry and the application-menu item route
-+		// through the stock service, so hooking its explicit check covers both surfaces. Results
-+		// surface through onStateChange above; the stock service reports the core-app outcome
-+		// itself, so this deliberately adds no "up to date" notification of its own.
++		// through the stock service, so hooking its explicit check covers both surfaces.
 +		if (stockUpdateServiceOwnsChecks) {
 +			this._register(stockUpdateService.onStateChange(state => {
 +				if (state.type === StateType.CheckingForUpdates && state.explicit) {
-+					this.updateService.checkForUpdates(true)
-+						.catch(err => this.logService.error('[wso2Update] component check alongside the stock check failed', err));
++					this.runCombinedExplicitCheck(stockUpdateService);
 +				}
 +			}));
 +		}
++	}
++
++	/**
++	 * One click, one answer. On macOS the stock command is the only "Check for Updates" entry, so it
++	 * covers both the core app (Squirrel) and the bundled components. The stock "no updates available"
++	 * dialog is suppressed for this case in the update contribution, because it resolves before the
++	 * component check finishes and would be contradicted by a component-update notification moments
++	 * later. Anything actually found announces itself — Squirrel prompts to restart once its download
++	 * is ready, components go through notifyAvailable() — so this reports only the all-clear.
++	 */
++	private async runCombinedExplicitCheck(stockUpdateService: IUpdateService): Promise<void> {
++		if (this.explicitCheckInFlight) {
++			return;
++		}
++		this.explicitCheckInFlight = true;
++		// An explicit click should always say something, even for a set already announced by an
++		// earlier background check.
++		this.lastNotifiedKey = undefined;
++		try {
++			const [stockState] = await Promise.all([
++				raceTimeout(this.waitForStockSettle(stockUpdateService), 60_000),
++				this.updateService.checkForUpdates(true).catch(err => {
++					this.logService.error('[wso2Update] component check alongside the stock check failed', err);
++				})
++			]);
++			const componentState = await this.updateService.getState();
++			// A timed-out stock check leaves the core-app outcome unknown, so stay silent rather than
++			// claim an all-clear we cannot vouch for.
++			if (stockState?.type === StateType.Idle && componentState.type === Wso2UpdateStateType.Idle) {
++				this.notificationService.info(localize('wso2.updates.allUpToDate', "WSO2 Integrator is up to date."));
++			}
++		} finally {
++			this.explicitCheckInFlight = false;
++		}
++	}
++
++	private waitForStockSettle(stockUpdateService: IUpdateService): Promise<UpdateState> {
++		if (stockUpdateService.state.type !== StateType.CheckingForUpdates) {
++			return Promise.resolve(stockUpdateService.state);
++		}
++		return new Promise<UpdateState>(resolve => {
++			// Scoped to this call, not the contribution: registering per check would accumulate
++			// listeners for the lifetime of the window.
++			const store = new DisposableStore();
++			store.add(stockUpdateService.onStateChange(state => {
++				if (state.type !== StateType.CheckingForUpdates) {
++					store.dispose();
++					resolve(state);
++				}
++			}));
++		});
 +	}
 +
 +	private onStateChange(state: Wso2UpdateState, isInitial = false): void {
@@ -2789,3 +2839,29 @@ Index: product-integrator/lib/vscode/build/filters.ts
  	'!resources/win32/bin/code.js',
  	'!resources/completions/**',
  	'!extensions/configuration-editing/build/inline-allOf.ts',
+Index: product-integrator/lib/vscode/src/vs/workbench/contrib/update/browser/update.ts
+===================================================================
+--- product-integrator.orig/lib/vscode/src/vs/workbench/contrib/update/browser/update.ts
++++ product-integrator/lib/vscode/src/vs/workbench/contrib/update/browser/update.ts
+@@ -17,7 +17,7 @@ import { INotificationService, Notificat
+ import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+ import { IBrowserWorkbenchEnvironmentService } from '../../../services/environment/browser/environmentService.js';
+ import { ReleaseNotesManager } from './releaseNotesEditor.js';
+-import { isWeb } from '../../../../base/common/platform.js';
++import { isMacintosh, isWeb } from '../../../../base/common/platform.js';
+ import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+ import { RawContextKey, IContextKey, IContextKeyService, ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
+ import { MenuRegistry, MenuId, registerAction2, Action2 } from '../../../../platform/actions/common/actions.js';
+@@ -254,7 +254,11 @@ export class UpdateContribution extends
+ 		switch (state.type) {
+ 			case StateType.Idle:
+ 				// Themed dialog shown from the last focused window; the windowless macOS case is handled by the main process.
+-				if (state.notAvailable && !state.error && await this.hostService.hadLastFocus()) {
++				// Where this command is also the entry point for the bundled-component check (macOS with a
++				// configured feed — see Wso2UpdateContribution), this dialog would answer for the core app
++				// alone while that check is still running, saying "no updates" and then being contradicted by
++				// a component-update notification. Wso2UpdateContribution reports the combined result instead.
++				if (state.notAvailable && !state.error && !(isMacintosh && this.productService.updateUrl) && await this.hostService.hadLastFocus()) {
+ 					this.dialogService.info(nls.localize('noUpdatesAvailable', "There are currently no updates available."));
+ 				}
+ 				break;
