@@ -256,7 +256,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Updat
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Update.ts
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,189 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -427,6 +427,14 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Updat
 +	/** Record that the renderer successfully installed a staged extension shadow copy. */
 +	recordExtensionInstalled(id: string, version: string): Promise<void>;
 +
++	/**
++	 * Called once the renderer has finished applying everything staged by the last download.
++	 * Leaves the `Downloaded` state behind so the "Restart to Finish Updating Components"
++	 * affordances stop showing for work that is already applied — unless a runtime is still
++	 * pending, which genuinely does need the restart.
++	 */
++	stagedExtensionsApplied(): Promise<void>;
++
 +	/** Open the full-app installer download for the current platform (notify + download flow). */
 +	downloadAppInstaller(): Promise<void>;
 +
@@ -442,7 +450,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/wso2ComponentUpdateService.ts
-@@ -0,0 +1,1029 @@
+@@ -0,0 +1,1050 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -1103,6 +1111,27 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +			}
 +		}
 +		return [...statuses.values()];
++	}
++
++	async stagedExtensionsApplied(): Promise<void> {
++		if (this._state.type !== Wso2UpdateStateType.Downloaded) {
++			return;
++		}
++		// A staged runtime only becomes active at the next startup, so the restart affordance has to
++		// survive until then. Extensions are live as soon as the renderer installs them.
++		if (this._state.restartRequired) {
++			return;
++		}
++		// Re-derive rather than assuming Idle: the user may have updated a single component from the
++		// Components picker while others were still on offer.
++		const manifest = this.lastManifest;
++		const updates = manifest ? this.resolveOfferedUpdates(manifest) : [];
++		const appUpdate = manifest ? this.resolveAppUpdate(manifest) : undefined;
++		if (updates.length === 0 && !appUpdate) {
++			this.setState({ type: Wso2UpdateStateType.Idle });
++		} else {
++			this.setState({ type: Wso2UpdateStateType.UpdatesAvailable, updates, appUpdate });
++		}
 +	}
 +
 +	async recordExtensionInstalled(id: string, version: string): Promise<void> {
@@ -1881,7 +1910,7 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser/wso2Update.contribution.ts
-@@ -0,0 +1,498 @@
+@@ -0,0 +1,504 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -2360,6 +2389,12 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +				this.logService.error(`[wso2Update] failed to install ${ext.id}@${ext.version}`, err);
 +			}
 +		}
++
++		// The staged work is applied, so leave the Downloaded state behind — otherwise the menu keeps
++		// offering "Restart to Finish Updating Components" for extensions that are already installed.
++		// A pending runtime keeps that state (restartRequired), since it really does need the restart.
++		await this.updateService.stagedExtensionsApplied()
++			.catch(err => this.logService.error('[wso2Update] failed to clear the downloaded state', err));
 +
 +		if (failed > 0) {
 +			this.notificationService.error(localize('wso2.updates.installFailed', "{0} component update(s) could not be installed. See the log (WSO2 Integrator) for details.", failed));
