@@ -209,10 +209,15 @@ Index: product-integrator/lib/vscode/src/vs/base/common/product.ts
 ===================================================================
 --- product-integrator.orig/lib/vscode/src/vs/base/common/product.ts
 +++ product-integrator/lib/vscode/src/vs/base/common/product.ts
-@@ -107,6 +107,9 @@ export interface IProductConfiguration {
+@@ -107,6 +107,14 @@ export interface IProductConfiguration {
  	readonly commit?: string;
  	readonly runtimeEnv?: IProductRuntimeEnvironmentMap | IProductRuntimeEnvironmentByPlatform;
  	readonly bundledComponents?: { readonly [id: string]: string };
++	/**
++	 * WSO2 Integrator's own product version (e.g. 5.1.2), as distinct from `version`, which is the
++	 * VS Code base version. This is what update decisions compare against.
++	 */
++	readonly wiversion?: string;
 +	readonly wso2UpdateUrl?: string;
 +	/** Base64-encoded PEM public key used to verify the update manifest's cosign signature. */
 +	readonly wso2UpdatePublicKey?: string;
@@ -1430,7 +1435,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +	}
 +
 +	private appVersion(): string {
-+		return (this.productService as { wiversion?: string }).wiversion ?? this.productService.version;
++		return this.productService.wiversion ?? this.productService.version;
 +	}
 +
 +	private passesRollout(component: IWso2ManifestComponent): boolean {
@@ -2900,3 +2905,34 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/update/browser/upd
  					this.dialogService.info(nls.localize('noUpdatesAvailable', "There are currently no updates available."));
  				}
  				break;
+Index: product-integrator/lib/vscode/src/vs/platform/update/electron-main/updateService.darwin.ts
+===================================================================
+--- product-integrator.orig/lib/vscode/src/vs/platform/update/electron-main/updateService.darwin.ts
++++ product-integrator/lib/vscode/src/vs/platform/update/electron-main/updateService.darwin.ts
+@@ -91,9 +91,25 @@ export class DarwinUpdateService extends
+ 		this.setState(State.Idle(UpdateType.Archive, message));
+ 	}
+ 
++	/**
++	 * Adds WSO2 Integrator's own product version to the feed request. The stock feed identifies a
++	 * build only by commit, which tells the server nothing about which release line the client is
++	 * on — so without this it cannot hold a 5.1.x client back from a 5.2.x build. Squirrel fetches
++	 * the feed URL verbatim, so a query parameter survives the hand-off to setFeedURL().
++	 */
++	private withProductVersion(url: string): string {
++		const wiversion = this.productService.wiversion;
++		if (!wiversion) {
++			return url;
++		}
++		const withVersion = new URL(url);
++		withVersion.searchParams.set('wiversion', wiversion);
++		return withVersion.toString();
++	}
++
+ 	protected buildUpdateFeedUrl(quality: string, commit: string, options?: IUpdateURLOptions): string | undefined {
+ 		const assetID = this.productService.darwinUniversalAssetId ?? (process.arch === 'x64' ? 'darwin' : 'darwin-arm64');
+-		const url = createUpdateURL(this.productService.updateUrl!, assetID, quality, commit, options);
++		const url = this.withProductVersion(createUpdateURL(this.productService.updateUrl!, assetID, quality, commit, options));
+ 		const headers = getUpdateRequestHeaders(this.productService.version);
+ 		try {
+ 			this.logService.trace('update#buildUpdateFeedUrl - setting feed URL for Electron autoUpdater', { url, assetID, quality, commit, headers });
