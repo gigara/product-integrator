@@ -120,3 +120,26 @@ isolated function sha256Hex(byte[] data) returns string {
     }
     return out;
 }
+
+// Extracts the "<major>.<minor>" line from a version string, e.g. 5.1.2-testalpha1 -> "5.1".
+// Returns () when the version has no minor component or either component is non-numeric, so
+// callers can skip line-based decisions rather than guess. Never used to build a filesystem
+// path — `wiversion` is untrusted client input.
+public isolated function minorLine(string version) returns string? {
+    string[] parts = re `\.`.split(version.trim());
+    if parts.length() < 2 {
+        return ();
+    }
+    string major = parts[0];
+    // The minor component may carry a pre-release suffix on a 2-part version (5.1-alpha1).
+    string minor = re `[^0-9]`.split(parts[1])[0];
+    if major.length() == 0 || minor.length() == 0 {
+        return ();
+    }
+    int|error majorNum = int:fromString(major);
+    int|error minorNum = int:fromString(minor);
+    if majorNum is error || minorNum is error {
+        return ();
+    }
+    return string `${majorNum}.${minorNum}`;
+}

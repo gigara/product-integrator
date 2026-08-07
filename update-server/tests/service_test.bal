@@ -228,3 +228,67 @@ function cleanupTestArtifacts() returns error? {
         check file:remove(seeded);
     }
 }
+
+// --- minor-line gating on the macOS Squirrel feed ---------------------------------
+
+@test:Config {}
+function testMinorLineParsing() {
+    test:assertEquals(minorLine("5.1.2-testalpha1"), "5.1");
+    test:assertEquals(minorLine("5.1.2"), "5.1");
+    test:assertEquals(minorLine("5.2.0.3"), "5.2");
+    test:assertEquals(minorLine("5.1-alpha1"), "5.1");
+    // No minor component, or non-numeric: callers must skip the line decision rather than guess.
+    test:assertEquals(minorLine("5"), ());
+    test:assertEquals(minorLine(""), ());
+    test:assertEquals(minorLine("latest"), ());
+    test:assertEquals(minorLine("x.y"), ());
+}
+
+@test:Config {}
+function testSquirrelFeedWithholdsCrossMinorUpdate() returns error? {
+    // The insider/darwin/arm64 fixture written by testSquirrelFeedFlow publishes 5.0.1.0.
+    string dir = check file:joinPath(dataDir, "api", "v1", "updates", "beta", "darwin", "arm64");
+    if !(check file:test(dir, file:EXISTS)) {
+        check file:createDir(dir, file:RECURSIVE);
+    }
+    string path = check file:joinPath(dir, "manifest.json");
+    json manifest = {
+        schemaVersion: 1,
+        sequence: 9,
+        channel: "beta",
+        platform: "darwin",
+        arch: "arm64",
+        publishedAt: "2026-08-05T00:00:00Z",
+        app: {
+            'version: "5.2.0",
+            'commit: "newsha",
+            installer: {url: "https://updates.wso2.com/a.dmg", sha256: "x", sizeBytes: 1},
+            squirrel: {url: "https://updates.wso2.com/a.zip"}
+        },
+        components: []
+    };
+    check io:fileWriteString(path, manifest.toJsonString());
+
+    // A 5.1.x client must NOT be offered the 5.2.0 build.
+    http:Response withheld = check testClient->get("/api/update/darwin-arm64/beta/oldsha?wiversion=5.1.3");
+    test:assertEquals(withheld.statusCode, 204);
+
+    // A client already on the 5.2 line is offered it.
+    http:Response offered = check testClient->get("/api/update/darwin-arm64/beta/oldsha?wiversion=5.2.0-rc1");
+    test:assertEquals(offered.statusCode, 200);
+    json body = check offered.getJsonPayload();
+    test:assertEquals(check body.productVersion, "5.2.0");
+
+    // A client that predates the parameter keeps the previous behaviour rather than being
+    // stranded with no updates at all.
+    http:Response legacy = check testClient->get("/api/update/darwin-arm64/beta/oldsha");
+    test:assertEquals(legacy.statusCode, 200);
+
+    // An unparseable version cannot be placed on a line, so it is not gated.
+    http:Response unparseable = check testClient->get("/api/update/darwin-arm64/beta/oldsha?wiversion=latest");
+    test:assertEquals(unparseable.statusCode, 200);
+
+    // Same-commit clients are still current regardless of the line.
+    http:Response current = check testClient->get("/api/update/darwin-arm64/beta/newsha?wiversion=5.2.0");
+    test:assertEquals(current.statusCode, 204);
+}

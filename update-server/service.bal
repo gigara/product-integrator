@@ -100,7 +100,8 @@ service / on updateListener {
     // from) and `app.squirrel.url` (the editor-only .app zip on the CDN) — no separate
     // feed artifact. Every failure path deliberately degrades to 204 ("no update") —
     // a broken/missing manifest must never surface an error on each mac client's check.
-    resource function get api/update/[string assetId]/[string quality]/[string clientCommit]() returns http:Response {
+    resource function get api/update/[string assetId]/[string quality]/[string clientCommit](
+            string? wiversion) returns http:Response {
         string? arch = assetId == "darwin" ? "x64" : assetId == "darwin-arm64" ? "arm64" : ();
         if arch is () {
             return jsonResponse(404, {'error: "unsupported asset"});
@@ -108,7 +109,7 @@ service / on updateListener {
         http:Response noUpdate = new;
         noUpdate.statusCode = 204;
         noUpdate.setHeader("Cache-Control", "no-store");
-        recordCheck(quality, assetId, arch, ());
+        recordCheck(quality, assetId, arch, wiversion);
         // Kill-switch applies to the mac core app exactly like the component manifest.
         if isRevoked(quality, "darwin", arch) {
             log:printInfo(string `squirrel feed withheld (revoked) quality=${quality} arch=${arch}`);
@@ -133,6 +134,16 @@ service / on updateListener {
             }
             if feedCommit == clientCommit {
                 return noUpdate; // client already runs the latest published build
+            }
+            // Minor-line gate: a 5.1.x client must not be offered a 5.2.x build. Decided here
+            // rather than in the manifest so the policy can change without a client release.
+            if restrictAppUpdatesToMinorLine && wiversion is string {
+                string? clientLine = minorLine(wiversion);
+                string? targetLine = minorLine(app.'version);
+                if clientLine is string && targetLine is string && clientLine != targetLine {
+                    log:printInfo(string `squirrel update withheld (minor line) client=${wiversion} target=${app.'version}`);
+                    return noUpdate;
+                }
             }
             log:printInfo(string `squirrel update offered quality=${quality} arch=${arch} version=${app.'version} to commit=${clientCommit}`);
             return jsonResponse(200, {

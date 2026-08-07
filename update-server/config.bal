@@ -51,6 +51,16 @@ configurable decimal s3CacheSeconds = 60;
 // (the default) the publish endpoint is disabled entirely and responds 404.
 configurable string adminToken = "";
 
+// Restrict macOS core-app updates to the client's own minor line: a 5.1.x client is
+// never offered a 5.2.x build. Enforced server-side from the `wiversion` the client
+// sends on the Squirrel feed request. Set to false to deliberately push a whole
+// channel across a minor boundary without shipping a new client.
+//
+// Clients that predate `wiversion` send nothing and cannot be placed on a line, so
+// they keep the previous behaviour (offered whatever the channel publishes) — the
+// alternative would strand them with no updates at all, permanently.
+configurable boolean restrictAppUpdatesToMinorLine = true;
+
 // Cache-Control max-age (seconds) sent with manifest/signature responses.
 // Clients additionally revalidate with the ETag, so this can be modest.
 configurable int cacheMaxAge = 300;
