@@ -231,6 +231,24 @@
         "category": "WSO2 Integrator"
       },
       {
+        "command": "BI.project-explorer.convert",
+        "title": "Convert to Project",
+        "icon": "$(package)",
+        "category": "WSO2 Integrator"
+      },
+      {
+        "command": "BI.project-explorer.open-project",
+        "title": "Open Project",
+        "icon": "$(folder-opened)",
+        "category": "WSO2 Integrator"
+      },
+      {
+        "command": "BI.project-explorer.add-to-project",
+        "title": "Add to Project",
+        "icon": "$(add)",
+        "category": "WSO2 Integrator"
+      },
+      {
         "command": "BI.project-explorer.overview",
         "title": "Open Overview",
         "icon": {
@@ -242,6 +260,18 @@
       {
         "command": "BI.project-explorer.add-connection",
         "title": "Add Connection",
+        "icon": "$(add)",
+        "category": "WSO2 Integrator"
+      },
+      {
+        "command": "BI.project-explorer.add-agent",
+        "title": "Add Agent",
+        "icon": "$(add)",
+        "category": "WSO2 Integrator"
+      },
+      {
+        "command": "BI.project-explorer.add-agent-definition",
+        "title": "Add Agent Definition",
         "icon": "$(add)",
         "category": "WSO2 Integrator"
       },
@@ -343,11 +373,31 @@
           "when": "false"
         },
         {
+          "command": "BI.project-explorer.convert",
+          "when": "false"
+        },
+        {
+          "command": "BI.project-explorer.open-project",
+          "when": "false"
+        },
+        {
+          "command": "BI.project-explorer.add-to-project",
+          "when": "false"
+        },
+        {
           "command": "BI.project-explorer.overview",
           "when": "false"
         },
         {
           "command": "BI.project-explorer.add-connection",
+          "when": "false"
+        },
+        {
+          "command": "BI.project-explorer.add-agent",
+          "when": "false"
+        },
+        {
+          "command": "BI.project-explorer.add-agent-definition",
           "when": "false"
         },
         {
@@ -415,13 +465,38 @@
           "group": "inline"
         },
         {
+          "command": "BI.project-explorer.convert",
+          "when": "view == wso2-integrator.explorer && viewItem == bi-project && BI.isBallerinaWorkspace != true && BI.enclosingProjectStatus != 'member' && BI.enclosingProjectStatus != 'orphaned'",
+          "group": "navigation"
+        },
+        {
+          "command": "BI.project-explorer.open-project",
+          "when": "view == wso2-integrator.explorer && viewItem == bi-project && BI.isBallerinaWorkspace != true && BI.enclosingProjectStatus == 'member'",
+          "group": "navigation"
+        },
+        {
+          "command": "BI.project-explorer.add-to-project",
+          "when": "view == wso2-integrator.explorer && viewItem == bi-project && BI.isBallerinaWorkspace != true && BI.enclosingProjectStatus == 'orphaned'",
+          "group": "navigation"
+        },
+        {
           "command": "BI.project-explorer.add-connection",
           "when": "view == wso2-integrator.explorer && viewItem == connections",
           "group": "inline"
         },
         {
+          "command": "BI.project-explorer.add-agent",
+          "when": "view == wso2-integrator.explorer && viewItem == agents",
+          "group": "inline"
+        },
+        {
+          "command": "BI.project-explorer.add-agent-definition",
+          "when": "view == wso2-integrator.explorer && viewItem == agentDefinitions",
+          "group": "inline"
+        },
+        {
           "command": "BI.project-explorer.delete",
-          "when": "view == wso2-integrator.explorer && (viewItem == CONNECTION || viewItem == SERVICE || viewItem == FUNCTION || viewItem == AUTOMATION || viewItem == TYPE || viewItem == CONFIGURABLE || viewItem == DATA_MAPPER || viewItem == NP_FUNCTION || viewItem == localConnector || viewItem == WORKFLOW || viewItem == ACTIVITY)",
+          "when": "view == wso2-integrator.explorer && (viewItem == CONNECTION || viewItem == SERVICE || viewItem == FUNCTION || viewItem == AUTOMATION || viewItem == TYPE || viewItem == CONFIGURABLE || viewItem == DATA_MAPPER || viewItem == NP_FUNCTION || viewItem == localConnector || viewItem == WORKFLOW || viewItem == ACTIVITY || viewItem == AGENT || viewItem == AGENT_DEFINITION)",
           "group": "inline"
         },
         {
@@ -487,8 +562,23 @@
           "group": "navigation@2"
         },
         {
+          "command": "BI.project-explorer.convert",
+          "when": "view == wso2-integrator.explorer && BI.project == true && BI.isBallerinaWorkspace != true && BI.enclosingProjectStatus != 'member' && BI.enclosingProjectStatus != 'orphaned'",
+          "group": "navigation"
+        },
+        {
+          "command": "BI.project-explorer.open-project",
+          "when": "view == wso2-integrator.explorer && BI.project == true && BI.isBallerinaWorkspace != true && BI.enclosingProjectStatus == 'member'",
+          "group": "navigation"
+        },
+        {
+          "command": "BI.project-explorer.add-to-project",
+          "when": "view == wso2-integrator.explorer && BI.project == true && BI.isBallerinaWorkspace != true && BI.enclosingProjectStatus == 'orphaned'",
+          "group": "navigation"
+        },
+        {
           "command": "BI.project-explorer.add",
-          "when": "view == wso2-integrator.explorer && BI.project == true",
+          "when": "view == wso2-integrator.explorer && BI.isBallerinaWorkspace == true",
           "group": "navigation"
         },
         {

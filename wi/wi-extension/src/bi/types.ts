@@ -23,7 +23,8 @@
 export const SHARED_COMMANDS = {
     FORCE_UPDATE_PROJECT_ARTIFACTS: 'ballerina.force.update.artifacts',
     SHOW_VISUALIZER: 'ballerina.showVisualizer',
-    GET_STATE_CONTEXT: 'ballerina.get.stateContext'
+    GET_STATE_CONTEXT: 'ballerina.get.stateContext',
+    GET_BI_FORM_WS_BOOTSTRAP: 'ballerina.getBiFormWsBootstrap'
 };
 
 export const BI_COMMANDS = {
@@ -46,6 +47,8 @@ export enum DIRECTORY_MAP {
     AUTOMATION = 'AUTOMATION',
     LISTENER = 'LISTENER',
     CONNECTION = 'CONNECTION',
+    AGENT = 'AGENT',
+    AGENT_DEFINITION = 'AGENT_DEFINITION',
     FUNCTION = 'FUNCTION',
     TYPE = 'TYPE',
     CONFIGURABLE = 'CONFIGURABLE',
