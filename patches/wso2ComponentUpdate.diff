@@ -455,7 +455,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/wso2ComponentUpdateService.ts
-@@ -0,0 +1,1050 @@
+@@ -0,0 +1,1101 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -528,6 +528,22 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 + * github stays for now (test manifests + runtime artifacts during the transition).
 + */
 +const ALLOWED_HOST_SUFFIXES = ['updates.wso2.com', 'github.com', 'githubusercontent.com', 'wso2.com'];
++
++/**
++ * A component artifact is hundreds of MB, so a single transient network fault must not throw the
++ * whole update away. Attempts are spaced out rather than immediate: the faults worth retrying
++ * (refused HTTP/2 stream, reset connection, 5xx, 429) are usually a server or link under momentary
++ * pressure, which an instant retry only adds to.
++ */
++const DOWNLOAD_ATTEMPTS = 3;
++const DOWNLOAD_RETRY_DELAYS_MS = [3000, 10000];
++
++/** Carries whether a failed download attempt is worth repeating. */
++class DownloadError extends Error {
++	constructor(message: string, readonly retryable: boolean) {
++		super(message);
++	}
++}
 +
 +export class Wso2ComponentUpdateService extends Disposable implements IWso2ComponentUpdateService {
 +
@@ -763,10 +779,13 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +				continue;
 +			}
 +			if (!this.passesRollout(component)) {
++				// Logged at info, not trace: "why is there no update?" is exactly the question this
++				// answers, and the default log level does not record trace.
++				this.logService.info(`[wso2Update] withholding ${id}@${component.version}: outside the rollout percentage`);
 +				continue;
 +			}
 +			if (!this.requiresSatisfied(component, manifest, local, projected)) {
-+				this.logService.trace(`[wso2Update] skipping ${id}@${component.version}: unmet requirements`);
++				this.logService.info(`[wso2Update] withholding ${id}@${component.version}: unmet requirements`);
 +				continue;
 +			}
 +			offered.push({
@@ -797,7 +816,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +				return false;
 +			}
 +			if (!this.satisfiesRange(depVersion, range)) {
-+				this.logService.trace(`[wso2Update] ${component.id}: ${depId} ${depVersion} does not satisfy '${range}'`);
++				this.logService.info(`[wso2Update] ${component.id}: ${depId} ${depVersion} does not satisfy '${range}'`);
 +				return false;
 +			}
 +		}
@@ -1020,17 +1039,49 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		} catch {
 +			// not present or unreadable — download below
 +		}
++		for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt++) {
++			try {
++				await this.downloadAttempt(url, destPath, expectedSha256);
++				return;
++			} catch (err) {
++				const retryable = err instanceof DownloadError ? err.retryable : true;
++				if (!retryable || attempt === DOWNLOAD_ATTEMPTS) {
++					throw err;
++				}
++				const delay = DOWNLOAD_RETRY_DELAYS_MS[attempt - 1] ?? DOWNLOAD_RETRY_DELAYS_MS[DOWNLOAD_RETRY_DELAYS_MS.length - 1];
++				this.logService.warn(`[wso2Update] download attempt ${attempt}/${DOWNLOAD_ATTEMPTS} for ${url} failed (${err}); retrying in ${delay}ms`);
++				await new Promise<void>(resolve => setTimeout(resolve, delay));
++			}
++		}
++	}
++
++	/**
++	 * One download attempt. Classifies its failures so downloadAndVerify() knows what to repeat:
++	 * transport faults and 5xx/429/408 are retryable, a 4xx is not (the artifact is not there), and
++	 * neither is a checksum mismatch — that means the manifest and the artifact disagree, so
++	 * re-fetching hundreds of MB would just fail the same way.
++	 */
++	private async downloadAttempt(url: string, destPath: string, expectedSha256: string): Promise<void> {
 +		this.logService.info(`[wso2Update] downloading ${url}`);
-+		const context = await this.requestService.request({ url, callSite: 'wso2Update.download' }, CancellationToken.None);
-+		if (context.res.statusCode !== 200) {
-+			throw new Error(`Unexpected status ${context.res.statusCode} downloading ${url}`);
++		const context = await this.requestService
++			.request({ url, callSite: 'wso2Update.download' }, CancellationToken.None)
++			.catch(err => {
++				// Never established, so nothing was written: always worth another attempt.
++				throw new DownloadError(`Request failed for ${url}: ${err}`, true);
++			});
++		const status = context.res.statusCode ?? 0;
++		if (status !== 200) {
++			throw new DownloadError(
++				`Unexpected status ${status} downloading ${url}`,
++				status >= 500 || status === 429 || status === 408
++			);
 +		}
 +		const hash = createHash('sha256');
 +		const out = fs.createWriteStream(destPath);
 +		await new Promise<void>((resolve, reject) => {
 +			// A write can fail asynchronously (disk full, I/O error); surface it so the download
 +			// rejects instead of hanging or resolving with a truncated file.
-+			out.on('error', err => reject(err));
++			out.on('error', err => reject(new DownloadError(`Writing ${destPath} failed: ${err}`, false)));
 +			listenStream(context.stream, {
 +				onData: chunk => {
 +					hash.update(chunk.buffer);
@@ -1044,7 +1095,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +				},
 +				onError: err => {
 +					out.destroy();
-+					reject(err);
++					reject(new DownloadError(`Transfer of ${url} failed: ${err}`, true));
 +				},
 +				onEnd: () => {
 +					out.end(() => resolve());
@@ -1054,7 +1105,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		const actual = hash.digest('hex').toLowerCase();
 +		if (actual !== expectedSha256.toLowerCase()) {
 +			await fs.promises.rm(destPath, { force: true });
-+			throw new Error(`Checksum mismatch for ${url} (expected ${expectedSha256}, got ${actual})`);
++			throw new DownloadError(`Checksum mismatch for ${url} (expected ${expectedSha256}, got ${actual})`, false);
 +		}
 +	}
 +
