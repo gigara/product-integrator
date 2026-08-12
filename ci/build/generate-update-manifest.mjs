@@ -244,6 +244,12 @@ async function main() {
 			continue;
 		}
 		const version = resolveVersion(component);
+		// Some upstreams tag a pre-release with a suffix but name the assets inside that release
+		// after the base version — Ballerina's v2201.13.6-alpha2 ships
+		// `ballerina-2201.13.6-swan-lake-linux.zip`. `{versionBase}` lets a template keep the full
+		// version in the tag and drop the suffix in the filename. Only use it where the upstream is
+		// known to name assets that way; assuming it everywhere would break the ones that don't.
+		const versionBase = typeof version === 'string' ? version.split('-')[0] : version;
 		// Fail rather than skip: a declared component that can't be rendered would otherwise
 		// produce a signed-but-incomplete manifest (and a recommendedSet referencing it), which
 		// the client would treat as authoritative. A missing version / unresolved URL is a
@@ -256,7 +262,7 @@ async function main() {
 		let sourceUrl;
 		let sourceFile;
 		if (component.sourceFile) {
-			sourceFile = path.join(REPO_ROOT, substitute(component.sourceFile, { ...substitutionVars, version }));
+			sourceFile = path.join(REPO_ROOT, substitute(component.sourceFile, { ...substitutionVars, version, versionBase }));
 		} else {
 			// 'marketplace' (or no flavor) is the default `url`; other flavors must be declared
 			// in the component's `sources` map — fail loudly rather than silently publishing
@@ -269,7 +275,7 @@ async function main() {
 					throw new Error(`Cannot render ${component.id}: no source URL for flavor '${flavor}'`);
 				}
 			}
-			sourceUrl = substitute(urlTemplate, { ...substitutionVars, version });
+			sourceUrl = substitute(urlTemplate, { ...substitutionVars, version, versionBase });
 			if (sourceUrl.includes('{')) {
 				throw new Error(`Cannot render ${component.id}: unresolved URL placeholder in '${sourceUrl}'`);
 			}
