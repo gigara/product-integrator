@@ -70,6 +70,16 @@ configurable boolean restrictAppUpdatesToMinorLine = true;
 // subject -> entitlement mapping, which belongs with the product decision, not here.
 configurable string[] clientTokens = [];
 
+// Base64-encoded PEM public key (`base64 < cosign.pub`) that the CI signs the source document with.
+// When set, a document whose detached signature is missing or invalid is REFUSED — the server
+// composes every client's response from this file, so a compromised bucket that could swap it would
+// otherwise be deciding what every client installs. Artifact statements still prevent installing
+// unsigned code, but the decisions themselves would be the attacker's.
+//
+// Empty (the default) skips the check with a warning, which is what local development and the test
+// suite run with.
+configurable string sourcePublicKey = "";
+
 // Cache-Control max-age (seconds) sent with manifest/signature responses.
 // Clients additionally revalidate with the ETag, so this can be modest.
 configurable int cacheMaxAge = 300;

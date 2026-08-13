@@ -28,6 +28,7 @@
 import ballerina/crypto;
 import ballerina/file;
 import ballerina/http;
+import ballerina/lang.array;
 import ballerina/log;
 
 listener http:Listener updateListener = new (port);
@@ -329,11 +330,11 @@ function buildFileResponse(string channel, string platform, string arch, string 
 // Admin authorization guard. Returns a denial response (404 when the admin API is disabled,
 // 401 on a bad/absent token) or () when the caller is authorized. Tokens are compared via
 // their SHA-256 digests so the comparison leaks no prefix-timing information.
-// Loads and parses the channel's source document. Returns () when nothing is published yet.
+// Loads, VERIFIES and parses the channel's source document. Returns () when nothing is published.
 //
-// NOTE: signature verification of the source belongs here (the document is cosign-signed by CI, and
-// a compromised bucket must not be able to feed the server a fabricated one). Not yet wired —
-// tracked as a go-live item, deliberately visible rather than silently absent.
+// The signature is checked over the exact bytes read, before parsing: the server composes every
+// client's response from this document, so accepting an unverified one would let whoever can write
+// to the bucket decide what every client is offered.
 function loadSource(string channel) returns SourceManifest|error? {
     [byte[], string]|error? stored = readSourceManifest(channel, "source.json");
     if stored is error {
@@ -342,9 +343,34 @@ function loadSource(string channel) returns SourceManifest|error? {
     if stored is () {
         return ();
     }
+    check verifySource(channel, stored[0]);
     string text = check string:fromBytes(stored[0]);
     json parsed = check text.fromJsonString();
     return parsed.cloneWithType(SourceManifest);
+}
+
+// Fails unless the document's detached signature verifies against the configured public key.
+// Skipped, with a warning, when no key is configured — the state local development and tests run in.
+function verifySource(string channel, byte[] content) returns error? {
+    if sourcePublicKey == "" {
+        log:printWarn("source document signature verification disabled (no sourcePublicKey configured)");
+        return ();
+    }
+    byte[] pemBytes = check array:fromBase64(sourcePublicKey);
+    string pem = check string:fromBytes(pemBytes);
+    [byte[], string]|error? stored = readSourceManifest(channel, "source.json.sig");
+    if stored is error {
+        return stored;
+    }
+    if stored is () {
+        return error(string `source document for ${channel} has no signature`);
+    }
+    string signature = check string:fromBytes(stored[0]);
+    boolean ok = check verifyDetachedSignature(content, signature, pem);
+    if !ok {
+        return error(string `source document signature verification failed for ${channel}`);
+    }
+    return ();
 }
 
 // Guards the CLIENT-facing read endpoints. Returns () when the request may proceed: either no
