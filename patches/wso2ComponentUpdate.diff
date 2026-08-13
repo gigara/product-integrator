@@ -268,7 +268,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Updat
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Update.ts
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,205 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -453,6 +453,16 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Updat
 +	 */
 +	stagedExtensionsApplied(): Promise<void>;
 +
++	/**
++	 * Supplies (or clears) the bearer token sent on update-server requests, so an entitled client
++	 * can be served a different set than an anonymous one. Owned by the workbench rather than this
++	 * service because authentication lives with the product's sign-in, not with the updater.
++	 *
++	 * The token is only ever sent to the configured update-server host — never to an artifact CDN
++	 * or third-party host, which would leak it to a party that has no business seeing it.
++	 */
++	setEntitlementToken(token: string | undefined): Promise<void>;
++
 +	/** Open the full-app installer download for the current platform (notify + download flow). */
 +	downloadAppInstaller(): Promise<void>;
 +
@@ -468,7 +478,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/wso2ComponentUpdateService.ts
-@@ -0,0 +1,1145 @@
+@@ -0,0 +1,1185 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -575,6 +585,39 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +
 +	/** The last verified manifest, retained so downloadUpdates() can act on the offered set. */
 +	private lastManifest: IWso2UpdateManifest | undefined;
++
++	/**
++	 * Bearer token for update-server requests, supplied by the workbench (see
++	 * setEntitlementToken). WSO2_UPDATE_TOKEN is a TEST-ONLY fallback so the auth path can be
++	 * exercised without a sign-in flow; it is read once at construction, never persisted.
++	 */
++	private entitlementToken: string | undefined = process.env['WSO2_UPDATE_TOKEN'] || undefined;
++
++	async setEntitlementToken(token: string | undefined): Promise<void> {
++		this.entitlementToken = token && token.length > 0 ? token : undefined;
++		this.logService.info(`[wso2Update] entitlement token ${this.entitlementToken ? 'set' : 'cleared'}`);
++	}
++
++	/**
++	 * Authorization header for `url`, but ONLY when it addresses the configured update server.
++	 * Artifacts are served from a CDN (and, during the transition, from third-party hosts), and a
++	 * bearer token must never be handed to those — a redirect or a mis-set artifact URL would
++	 * otherwise exfiltrate it.
++	 */
++	private authHeaders(url: string): { readonly [header: string]: string } | undefined {
++		if (!this.entitlementToken) {
++			return undefined;
++		}
++		try {
++			const base = this.updateBaseUrl;
++			if (!base || new URL(url).hostname.toLowerCase() !== new URL(base).hostname.toLowerCase()) {
++				return undefined;
++			}
++		} catch {
++			return undefined;
++		}
++		return { Authorization: `Bearer ${this.entitlementToken}` };
++	}
 +
 +	constructor(
 +		@ILifecycleMainService private readonly lifecycleMainService: ILifecycleMainService,
@@ -708,7 +751,10 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +			throw new Error(`Manifest host not allowed: ${url}`);
 +		}
 +		const appVersion = this.appVersion();
-+		const context = await this.requestService.request({ url: `${url}?appVersion=${encodeURIComponent(appVersion)}`, callSite: 'wso2Update.checkForUpdates' }, CancellationToken.None);
++		const manifestUrl = `${url}?appVersion=${encodeURIComponent(appVersion)}`;
++		const context = await this.requestService.request(
++			{ url: manifestUrl, headers: this.authHeaders(manifestUrl), callSite: 'wso2Update.checkForUpdates' },
++			CancellationToken.None);
 +		if (context.res.statusCode === 204) {
 +			return undefined;
 +		}
@@ -739,7 +785,9 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		if (!this.isAllowedUrl(signatureUrl)) {
 +			throw new Error(`Signature host not allowed: ${signatureUrl}`);
 +		}
-+		const signatureContext = await this.requestService.request({ url: signatureUrl, callSite: 'wso2Update.manifestSignature' }, CancellationToken.None);
++		const signatureContext = await this.requestService.request(
++			{ url: signatureUrl, headers: this.authHeaders(signatureUrl), callSite: 'wso2Update.manifestSignature' },
++			CancellationToken.None);
 +		if (signatureContext.res.statusCode !== 200) {
 +			throw new Error(`Missing manifest signature (HTTP ${signatureContext.res.statusCode})`);
 +		}
@@ -1100,7 +1148,9 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		if (!this.isAllowedUrl(sigUrl)) {
 +			throw new DownloadError(`Signature host not allowed: ${sigUrl}`, false);
 +		}
-+		const context = await this.requestService.request({ url: sigUrl, callSite: 'wso2Update.artifactSignature' }, CancellationToken.None);
++		const context = await this.requestService.request(
++			{ url: sigUrl, headers: this.authHeaders(sigUrl), callSite: 'wso2Update.artifactSignature' },
++			CancellationToken.None);
 +		if (context.res.statusCode !== 200) {
 +			throw new DownloadError(`Missing artifact signature ${sigUrl} (HTTP ${context.res.statusCode})`, false);
 +		}
@@ -1121,7 +1171,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +	private async downloadAttempt(url: string, destPath: string, expectedSha256: string): Promise<void> {
 +		this.logService.info(`[wso2Update] downloading ${url}`);
 +		const context = await this.requestService
-+			.request({ url, callSite: 'wso2Update.download' }, CancellationToken.None)
++			.request({ url, headers: this.authHeaders(url), callSite: 'wso2Update.download' }, CancellationToken.None)
 +			.catch(err => {
 +				// Never established, so nothing was written: always worth another attempt.
 +				throw new DownloadError(`Request failed for ${url}: ${err}`, true);
