@@ -17,22 +17,37 @@
  * under the License.
  */
 
-// Renders a WSO2 Integrator update manifest (see docs/update-mechanism-design.md §4.2) for a
-// given (channel, platform, arch) from ci/build/update-manifest.config.json and
-// ci/build/component-versions.properties, computing each artifact's sha256 + size by
-// downloading it. The output is uploaded (and cosign-signed) by the publish-update-manifest CI job.
+// Renders the WSO2 Integrator update SOURCE DOCUMENT (see docs/update-mechanism-design.md §4.2)
+// for one channel from ci/build/update-manifest.config.json and
+// ci/build/component-versions.properties, computing each artifact's sha256 + size by downloading
+// it. The output is uploaded (and cosign-signed) by the publish-update-source CI job.
 //
-// With --artifacts-base + --mirror-dir, every artifact (components + app installer) is also
+// ONE document covers every platform and arch: each component and app entry carries a `targets`
+// map keyed by "<platform>-<arch>" (darwin-arm64, win32-x64, …). Clients never read it — the
+// update server does, and composes a per-client answer from it. Restrict which targets are
+// rendered with --targets (comma-separated) when a run only built some of them.
+//
+// A component may declare `variants` to publish several versions of the same id side by side,
+// each pinned to a different release line via its own `requires.app`; the server then picks the
+// one entry that applies to the client asking. This is how a 5.1.x user keeps getting 5.1-line
+// component updates after 5.2 ships.
+//
+// With --artifacts-base + --mirror-dir, every artifact (components + app installers) is also
 // MIRRORED: the downloaded bytes are written under --mirror-dir (components/{id}/{version}/
-// and app/{version}/) for the CI job to upload to the update bucket, and the manifest's URLs
-// point at {artifacts-base}/<that path> (the CDN in front of the bucket) instead of the source.
+// and app/{version}/) for the CI job to upload to the update bucket, and the URLs point at
+// {artifacts-base}/<that path> (the CDN in front of the bucket) instead of the source.
 // Components may declare `sourceFile` (a repo-relative file, e.g. the locally built WI extension
 // VSIX) instead of `url`; those require mirroring since they have no public source URL.
 //
+// Alongside each artifact the generator writes a SIGNED STATEMENT (<artifact>.statement.json)
+// binding {id, version, sha256, sizeBytes, requires} together, so a signature cannot be replayed
+// over a different artifact than the one it was issued for.
+//
 // Usage:
 //   node ci/build/generate-update-manifest.mjs \
-//     --channel stable --platform darwin --arch arm64 --sequence 42 \
-//     --app-version 5.0.1.0 [--app-installer-url URL] [--out manifest.json] \
+//     --channel stable --sequence 42 [--targets darwin-arm64,win32-x64] \
+//     --app-version 5.0.1.0 [--app-commit SHA] [--app-release-base URL] \
+//     [--app-applies-to '>=5.0.0'] [--app-rollout 25] [--out source.json] \
 //     [--artifacts-base https://cdn/artifacts --mirror-dir artifacts-mirror] [--no-download]
 //
 // --no-download emits placeholder hashes (structure-only; for local validation, not for release).
