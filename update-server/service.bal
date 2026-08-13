@@ -250,19 +250,33 @@ service / on updateListener {
     // Disabled (404) unless `adminToken` is configured; requires a matching
     // `Authorization: Bearer <token>` header. Manifests are shape-validated.
     // Admin publish of the source document (one per channel).
-    resource function put api/v1/updates/[string channel]/[string fileName](http:Request request, @http:Payload byte[] body)
+    //
+    // The body is read explicitly rather than declared as `@http:Payload byte[]`: the
+    // publisher sends the document as application/json (and its signature as text/plain),
+    // and data binding rejects both of those against byte[] before the resource ever runs.
+    // The signature must also survive byte-for-byte, so it is never round-tripped as JSON.
+    resource function put api/v1/updates/[string channel]/[string fileName](http:Request request)
             returns http:Response {
         http:Response? denied = authGuard(request);
         if denied is http:Response {
             return denied;
         }
-        error? written = writeSourceManifest(channel, fileName, body);
-        if written is error {
-            log:printError("source publish failed", written);
-            return jsonResponse(400, {'error: written.message()});
+        do {
+            byte[] body = check request.getBinaryPayload();
+            if fileName == "source.json" {
+                // Reject a malformed document at publish time. Otherwise the failure surfaces
+                // later, on every client's update check, against a server that looks healthy.
+                string text = check string:fromBytes(body);
+                json parsed = check text.fromJsonString();
+                SourceManifest _ = check parsed.cloneWithType(SourceManifest);
+            }
+            check writeSourceManifest(channel, fileName, body);
+            log:printInfo(string `published ${channel}/${fileName} (${body.length()} bytes)`);
+            return jsonResponse(201, {status: "published", path: string `${channel}/${fileName}`});
+        } on fail error e {
+            log:printError("source publish failed", e);
+            return jsonResponse(400, {'error: e.message()});
         }
-        log:printInfo(string `published ${channel}/${fileName} (${body.length()} bytes)`);
-        return jsonResponse(201, {status: "published", path: string `${channel}/${fileName}`});
     }
 
     resource function put api/v1/updates/[string channel]/[string platform]/[string arch]/[string fileName](
