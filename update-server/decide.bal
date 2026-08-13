@@ -247,3 +247,31 @@ isolated function decideUpdates(SourceManifest src, UpdateCheckRequest req) retu
     }
     return response;
 }
+
+// Squirrel.Mac asks by COMMIT, not version: it has no notion of our version numbers, so its feed
+// answers "is the build you are running still current?" rather than "is there a newer version?".
+// That is why this cannot reuse decideApp(), whose whole basis is a version comparison — a client
+// that predates `wiversion` sends no version at all.
+//
+// Picks the newest app entry that publishes a Squirrel payload for this target and, where the
+// client did report its version, belongs to that client's release line.
+isolated function decideSquirrel(SourceManifest src, string target, string? wiversion) returns SourceApp? {
+    SourceApp? best = ();
+    foreach SourceApp app in src.apps {
+        AppTarget? forTarget = app.targets[target];
+        if forTarget is () {
+            continue;
+        }
+        if forTarget?.squirrel is () {
+            continue; // this target ships no Squirrel payload (windows/linux)
+        }
+        string? appliesTo = app?.appliesTo;
+        if appliesTo is string && wiversion is string && !satisfiesRange(wiversion, appliesTo) {
+            continue; // a different release line's entry
+        }
+        if best is () || compareVersions(app.'version, best.'version) > 0 {
+            best = app;
+        }
+    }
+    return best;
+}

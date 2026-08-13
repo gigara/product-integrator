@@ -124,27 +124,23 @@ service / on updateListener {
             return noUpdate;
         }
         do {
-            [byte[], string]? artifact = check readStoredArtifact(quality, "darwin", arch, "manifest.json");
-            if artifact is () {
-                return noUpdate; // nothing published for this channel/arch
+            SourceManifest? src = check loadSource(quality);
+            if src is () {
+                return noUpdate; // nothing published for this channel
             }
-            string text = check string:fromBytes(artifact[0]);
-            json parsed = check text.fromJsonString();
-            Manifest manifest = check parsed.cloneWithType(Manifest);
-            AppUpdate? app = manifest.app;
+            SourceApp? app = decideSquirrel(src, string `darwin-${arch}`, wiversion);
             if app is () {
-                return noUpdate;
+                return noUpdate; // no Squirrel payload for this target/line
             }
             string? feedCommit = app?.'commit;
-            SquirrelPayload? squirrel = app?.squirrel;
-            if feedCommit is () || squirrel is () {
-                return noUpdate; // manifest predates the embedded Squirrel feed
+            if feedCommit is () {
+                return noUpdate; // document predates commit-stamped app entries
             }
             if feedCommit == clientCommit {
                 return noUpdate; // client already runs the latest published build
             }
-            // Minor-line gate: a 5.1.x client must not be offered a 5.2.x build. Decided here
-            // rather than in the manifest so the policy can change without a client release.
+            // Belt and braces alongside `appliesTo`: a document that omits the range is still held
+            // to the client's own line, so a cross-line build cannot reach it by accident.
             if restrictAppUpdatesToMinorLine && wiversion is string {
                 string? clientLine = minorLine(wiversion);
                 string? targetLine = minorLine(app.'version);
@@ -153,12 +149,14 @@ service / on updateListener {
                     return noUpdate;
                 }
             }
+            AppTarget chosen = <AppTarget>app.targets[string `darwin-${arch}`];
+            SquirrelPayload squirrel = <SquirrelPayload>chosen?.squirrel;
             log:printInfo(string `squirrel update offered quality=${quality} arch=${arch} version=${app.'version} to commit=${clientCommit}`);
             return jsonResponse(200, {
                 url: squirrel.url,
                 name: app.'version,
                 productVersion: app.'version,
-                pub_date: manifest.publishedAt
+                pub_date: src.publishedAt
             });
         } on fail error e {
             log:printError("squirrel feed lookup failed", e);

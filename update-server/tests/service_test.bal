@@ -178,30 +178,32 @@ function testSquirrelFeedUnknownAssetReturns404() returns error? {
 
 @test:Config {}
 function testSquirrelFeedFlow() returns error? {
-    // Seed a manifest with the embedded Squirrel feed (app.commit + app.squirrel.url)
-    // at a scope with no fixture (insider/darwin/arm64).
+    // Seed a SOURCE document (one per channel, all targets) at a scope with no fixture.
     string zipUrl = "https://updates.wso2.com/artifacts/app/5.0.1.0/wso2-integrator-5.0.1.0-arm64-mac.zip";
-    string dir = check file:joinPath(dataDir, "api", "v1", "updates", "insider", "darwin", "arm64");
+    string dir = check file:joinPath(dataDir, "api", "v1", "updates", "insider");
     if !(check file:test(dir, file:EXISTS)) {
         check file:createDir(dir, file:RECURSIVE);
     }
-    string path = check file:joinPath(dir, "manifest.json");
-    json manifest = {
-        schemaVersion: 1,
+    json src = {
+        schemaVersion: 2,
         channel: "insider",
-        platform: "darwin",
-        arch: "arm64",
-        sequence: 1,
-        publishedAt: "2026-07-29T00:00:00Z",
-        app: {
-            'version: "5.0.1.0",
-            'commit: "newsha",
-            installer: {url: "https://updates.wso2.com/artifacts/app/5.0.1.0/wso2-integrator-5.0.1.0-arm64.dmg", sha256: "0", sizeBytes: 1},
-            squirrel: {url: zipUrl}
-        },
+        sequence: 7,
+        publishedAt: "2026-08-13T00:00:00Z",
+        apps: [
+            {
+                'version: "5.0.1.0",
+                'commit: "newsha",
+                targets: {
+                    "darwin-arm64": {
+                        installer: {url: "https://updates.wso2.com/a.dmg", sha256: "x", sizeBytes: 1},
+                        squirrel: {url: zipUrl}
+                    }
+                }
+            }
+        ],
         components: []
     };
-    check io:fileWriteString(path, manifest.toJsonString());
+    check io:fileWriteString(check file:joinPath(dir, "source.json"), src.toJsonString());
 
     // An older build (different commit) is offered the update with the CDN zip URL.
     http:Response offered = check testClient->get("/api/update/darwin-arm64/insider/oldsha");
@@ -214,23 +216,10 @@ function testSquirrelFeedFlow() returns error? {
     http:Response current = check testClient->get("/api/update/darwin-arm64/insider/newsha");
     test:assertEquals(current.statusCode, 204);
 
-    check file:remove(path);
+    // x64 has no target in this document at all, so there is nothing to offer.
+    http:Response otherArch = check testClient->get("/api/update/darwin/insider/oldsha");
+    test:assertEquals(otherArch.statusCode, 204);
 }
-
-// Remove files created by the kill-switch / squirrel tests so they aren't left in the repo.
-@test:AfterSuite {}
-function cleanupTestArtifacts() returns error? {
-    string revocations = check file:joinPath(dataDir, "revocations.json");
-    if check file:test(revocations, file:EXISTS) {
-        check file:remove(revocations);
-    }
-    string seeded = check file:joinPath(dataDir, "api", "v1", "updates", "insider", "darwin", "arm64", "manifest.json");
-    if check file:test(seeded, file:EXISTS) {
-        check file:remove(seeded);
-    }
-}
-
-// --- minor-line gating on the macOS Squirrel feed ---------------------------------
 
 @test:Config {}
 function testMinorLineParsing() {
@@ -247,28 +236,32 @@ function testMinorLineParsing() {
 
 @test:Config {}
 function testSquirrelFeedWithholdsCrossMinorUpdate() returns error? {
-    // The insider/darwin/arm64 fixture written by testSquirrelFeedFlow publishes 5.0.1.0.
-    string dir = check file:joinPath(dataDir, "api", "v1", "updates", "beta", "darwin", "arm64");
+    string dir = check file:joinPath(dataDir, "api", "v1", "updates", "beta");
     if !(check file:test(dir, file:EXISTS)) {
         check file:createDir(dir, file:RECURSIVE);
     }
-    string path = check file:joinPath(dir, "manifest.json");
-    json manifest = {
-        schemaVersion: 1,
-        sequence: 9,
+    // No `appliesTo` here on purpose: this exercises the standalone minor-line gate, which is what
+    // still protects a document that does not declare its line.
+    json src = {
+        schemaVersion: 2,
         channel: "beta",
-        platform: "darwin",
-        arch: "arm64",
-        publishedAt: "2026-08-05T00:00:00Z",
-        app: {
-            'version: "5.2.0",
-            'commit: "newsha",
-            installer: {url: "https://updates.wso2.com/a.dmg", sha256: "x", sizeBytes: 1},
-            squirrel: {url: "https://updates.wso2.com/a.zip"}
-        },
+        sequence: 9,
+        publishedAt: "2026-08-13T00:00:00Z",
+        apps: [
+            {
+                'version: "5.2.0",
+                'commit: "newsha",
+                targets: {
+                    "darwin-arm64": {
+                        installer: {url: "https://updates.wso2.com/a.dmg", sha256: "x", sizeBytes: 1},
+                        squirrel: {url: "https://updates.wso2.com/a.zip"}
+                    }
+                }
+            }
+        ],
         components: []
     };
-    check io:fileWriteString(path, manifest.toJsonString());
+    check io:fileWriteString(check file:joinPath(dir, "source.json"), src.toJsonString());
 
     // A 5.1.x client must NOT be offered the 5.2.0 build.
     http:Response withheld = check testClient->get("/api/update/darwin-arm64/beta/oldsha?wiversion=5.1.3");
@@ -293,8 +286,6 @@ function testSquirrelFeedWithholdsCrossMinorUpdate() returns error? {
     http:Response current = check testClient->get("/api/update/darwin-arm64/beta/newsha?wiversion=5.2.0");
     test:assertEquals(current.statusCode, 204);
 }
-
-// --- client-token gate on the read endpoints -------------------------------------
 
 @test:Config {}
 function testReadEndpointsOpenWhenNoClientTokensConfigured() returns error? {

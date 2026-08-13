@@ -213,3 +213,24 @@ function testVersionComparisonAndRanges() {
     test:assertTrue(satisfiesRange("3.0.2", ">=3.0.2"));
     test:assertTrue(satisfiesRange("5.1.0", ""));
 }
+
+@test:Config {}
+function testSquirrelPicksTheClientsLineAndOnlyWhereAPayloadExists() {
+    SourceManifest src = sampleSource();
+    // A 5.1.x client is matched to the 5.1 entry, which is the one carrying a Squirrel payload.
+    SourceApp? five1 = decideSquirrel(src, "darwin-arm64", "5.1.2");
+    test:assertEquals(five1 is SourceApp ? five1.'version : "none", "5.1.9");
+
+    // A 5.2.x client is matched to the 5.2 entry — which publishes no Squirrel payload, so the feed
+    // has nothing for it rather than falling back to the other line's zip.
+    SourceApp? five2 = decideSquirrel(src, "darwin-arm64", "5.2.0");
+    test:assertTrue(five2 is (), "5.2 entry has no squirrel payload, so nothing may be offered");
+
+    // A client that predates `wiversion` reports no version: it cannot be placed on a line, so the
+    // newest entry that has a payload is used rather than stranding it with no updates at all.
+    SourceApp? legacy = decideSquirrel(src, "darwin-arm64", ());
+    test:assertEquals(legacy is SourceApp ? legacy.'version : "none", "5.1.9");
+
+    // win32 publishes an installer but never a Squirrel payload.
+    test:assertTrue(decideSquirrel(src, "win32-x64", "5.1.2") is ());
+}
