@@ -27,6 +27,10 @@ final readonly & string[] ALLOWED_PLATFORMS = ["darwin", "linux", "win32"];
 final readonly & string[] ALLOWED_ARCHS = ["x64", "arm64"];
 final readonly & string[] ALLOWED_FILES = ["manifest.json", "manifest.json.sig", "manifest.json.pem"];
 
+// The source document and its detached signature. The server verifies the signature before
+// trusting the document, so a compromised bucket cannot feed it a fabricated source.
+final readonly & string[] SOURCE_FILES = ["source.json", "source.json.sig"];
+
 final readonly & map<string> CONTENT_TYPES = {
     "manifest.json": "application/json",
     "manifest.json.sig": "application/octet-stream",
@@ -70,6 +74,40 @@ function readStoredArtifact(string channel, string platform, string arch, string
     }
     string path = check resolvePath(channel, platform, arch, fileName);
     return readArtifact(path);
+}
+
+// Reads the single source document for a channel — the one file CI publishes and the server
+// composes every response from. Clients never fetch it.
+//
+// Kept separate from readStoredArtifact() because its path has no platform/arch: the whole point
+// of the source document is that one file covers every target.
+function readSourceManifest(string channel, string fileName) returns [byte[], string]|error? {
+    if allowedChannels.indexOf(channel) !is int {
+        return error(string `unsupported channel: ${channel}`);
+    }
+    if SOURCE_FILES.indexOf(fileName) !is int {
+        return error(string `unsupported file: ${fileName}`);
+    }
+    if s3Bucket != "" {
+        return readS3Artifact(string `manifests/${channel}/${fileName}`);
+    }
+    string path = check file:joinPath(dataDir, "api", "v1", "updates", channel, fileName);
+    return readArtifact(path);
+}
+
+// Admin publish of the source document.
+function writeSourceManifest(string channel, string fileName, byte[] content) returns error? {
+    if allowedChannels.indexOf(channel) !is int {
+        return error(string `unsupported channel: ${channel}`);
+    }
+    if SOURCE_FILES.indexOf(fileName) !is int {
+        return error(string `unsupported file: ${fileName}`);
+    }
+    if s3Bucket != "" {
+        return writeS3Artifact(string `manifests/${channel}/${fileName}`, content);
+    }
+    string path = check file:joinPath(dataDir, "api", "v1", "updates", channel, fileName);
+    return writeArtifact(path, content);
 }
 
 // Store-agnostic write (admin publish): S3 write-through or the local data directory.

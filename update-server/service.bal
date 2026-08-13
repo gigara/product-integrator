@@ -167,6 +167,48 @@ service / on updateListener {
     }
 
     // Admin: list current kill-switch revocations. Bearer adminToken; 404 when disabled.
+    // The update check. The client reports what it has; the server decides what it should take.
+    //
+    // 204 means "nothing for you" and is also every failure mode: a broken or unpublished channel
+    // must degrade to "no updates", never to an error the client surfaces to a user who cannot act
+    // on it.
+    resource function post api/v1/updates(http:Request request, @http:Payload UpdateCheckRequest body)
+            returns http:Response {
+        http:Response? denied = clientAuthGuard(request);
+        if denied is http:Response {
+            return denied;
+        }
+        string channel = body?.channel ?: "stable";
+        http:Response nothing = new;
+        nothing.statusCode = 204;
+        nothing.setHeader("Cache-Control", "no-store");
+
+        recordCheck(channel, body.platform, body.arch, body.appVersion);
+        // Kill-switch: withhold everything for a revoked scope so NEW clients take nothing, without
+        // rewriting or re-signing a thing.
+        if isRevoked(channel, body.platform, body.arch) {
+            log:printInfo(string `updates withheld (revoked) channel=${channel} platform=${body.platform} arch=${body.arch}`);
+            return nothing;
+        }
+        do {
+            SourceManifest? src = check loadSource(channel);
+            if src is () {
+                return nothing;
+            }
+            UpdateCheckResponse? decision = decideUpdates(src, body);
+            if decision is () {
+                return nothing;
+            }
+            log:printInfo(string `offering ${decision.components.length()} component(s)` +
+                string ` app=${decision?.app is AppOffer ? "yes" : "no"}` +
+                string ` to ${body.platform}-${body.arch} appVersion=${body.appVersion} channel=${channel}`);
+            return jsonResponse(200, decision.toJson());
+        } on fail error e {
+            log:printError("update check failed", e);
+            return nothing;
+        }
+    }
+
     resource function get api/v1/admin/revocations(http:Request request) returns http:Response {
         http:Response? denied = authGuard(request);
         if denied is http:Response {
@@ -208,6 +250,22 @@ service / on updateListener {
     // Admin publish: writes a manifest/signature/certificate to the store.
     // Disabled (404) unless `adminToken` is configured; requires a matching
     // `Authorization: Bearer <token>` header. Manifests are shape-validated.
+    // Admin publish of the source document (one per channel).
+    resource function put api/v1/updates/[string channel]/[string fileName](http:Request request, @http:Payload byte[] body)
+            returns http:Response {
+        http:Response? denied = authGuard(request);
+        if denied is http:Response {
+            return denied;
+        }
+        error? written = writeSourceManifest(channel, fileName, body);
+        if written is error {
+            log:printError("source publish failed", written);
+            return jsonResponse(400, {'error: written.message()});
+        }
+        log:printInfo(string `published ${channel}/${fileName} (${body.length()} bytes)`);
+        return jsonResponse(201, {status: "published", path: string `${channel}/${fileName}`});
+    }
+
     resource function put api/v1/updates/[string channel]/[string platform]/[string arch]/[string fileName](
             http:Request request) returns http:Response {
         http:Response? denied = authGuard(request);
@@ -273,6 +331,24 @@ function buildFileResponse(string channel, string platform, string arch, string 
 // Admin authorization guard. Returns a denial response (404 when the admin API is disabled,
 // 401 on a bad/absent token) or () when the caller is authorized. Tokens are compared via
 // their SHA-256 digests so the comparison leaks no prefix-timing information.
+// Loads and parses the channel's source document. Returns () when nothing is published yet.
+//
+// NOTE: signature verification of the source belongs here (the document is cosign-signed by CI, and
+// a compromised bucket must not be able to feed the server a fabricated one). Not yet wired —
+// tracked as a go-live item, deliberately visible rather than silently absent.
+function loadSource(string channel) returns SourceManifest|error? {
+    [byte[], string]|error? stored = readSourceManifest(channel, "source.json");
+    if stored is error {
+        return stored;
+    }
+    if stored is () {
+        return ();
+    }
+    string text = check string:fromBytes(stored[0]);
+    json parsed = check text.fromJsonString();
+    return parsed.cloneWithType(SourceManifest);
+}
+
 // Guards the CLIENT-facing read endpoints. Returns () when the request may proceed: either no
 // clientTokens are configured (open, as today) or the presented bearer matches one of them.
 //

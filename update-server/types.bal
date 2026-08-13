@@ -92,3 +92,99 @@ public type Manifest record {
     Component[] components;
     RecommendedSet recommendedSet?;
 };
+
+// --- source document (schemaVersion 2) -------------------------------------------------
+// ONE published document per channel describes every platform/arch. The server reads it and
+// composes a per-client response; clients never see it. Keeping the fan-out here rather than in
+// published files is what lets one document serve several release lines and, later, entitlement.
+
+// One platform-arch's copy of an artifact. Keyed by "<platform>-<arch>" in a `targets` map.
+public type TargetArtifact record {
+    string url;
+    string sha256;
+    int sizeBytes;
+    SignatureRef signature?;
+};
+
+// A component offered across targets. `requires` and `rollout` apply to every target alike.
+public type SourceComponent record {
+    string id;
+    string kind;
+    string 'version;
+    map<string> requires?;
+    Rollout rollout?;
+    boolean recommended?;
+    string releaseNotesUrl?;
+    map<TargetArtifact> targets;
+};
+
+// The core app for one platform-arch: its installer, plus the Squirrel zip where one exists.
+public type AppTarget record {
+    TargetArtifact installer;
+    SquirrelPayload squirrel?;
+};
+
+// A core-app release. `appliesTo` is a range over the CLIENT'S CURRENT version, which is how one
+// document serves several lines at once: a 5.1.z entry with ">=5.1.0 <5.2.0" simply does not match
+// a 5.2.x client, so that client is never offered it.
+public type SourceApp record {
+    string 'version;
+    string 'commit?;
+    string appliesTo?;
+    Rollout rollout?;
+    string releaseNotesUrl?;
+    map<AppTarget> targets;
+};
+
+public type SourceManifest record {
+    int schemaVersion;
+    string channel;
+    int sequence;
+    string publishedAt;
+    string expiresAt?;
+    SourceApp[] apps;
+    SourceComponent[] components;
+};
+
+// --- update-check protocol -------------------------------------------------------------
+
+// What the client reports about itself. `bucket` is the client's own 0-99 rollout slot, computed
+// locally from a device id that is deliberately NEVER transmitted.
+public type UpdateCheckRequest record {
+    string channel?;
+    string platform;
+    string arch;
+    string appVersion;
+    string appCommit?;
+    // EVERY component the client has, bundled ones included — not just installed overrides. A
+    // component omitted here is treated as absent, and any other component whose `requires` names
+    // it is then withheld, since the server has no way to tell "not installed" from "not reported".
+    map<string> components?;
+    int bucket?;
+};
+
+// One component the server decided this client should take.
+public type ComponentOffer record {
+    string id;
+    string kind;
+    string 'version;
+    TargetArtifact artifact;
+    map<string> requires?;
+    string releaseNotesUrl?;
+};
+
+// The core-app offer, carrying whichever payload the platform applies.
+public type AppOffer record {
+    string 'version;
+    string 'commit?;
+    TargetArtifact installer;
+    SquirrelPayload squirrel?;
+    string releaseNotesUrl?;
+};
+
+public type UpdateCheckResponse record {
+    AppOffer app?;
+    ComponentOffer[] components;
+    string checkedAt;
+    int sequence;
+};
