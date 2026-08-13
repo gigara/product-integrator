@@ -1705,15 +1705,30 @@ jobs:
           # Public key as a file, matching the manifest verify step: cosign's env:// keyref is used
           # for the private key, and the proven pattern here for verification is a key file.
           printf '%s' "$COSIGN_PUBLIC_KEY" > cosign.pub
+          # Sign the STATEMENTS the generator wrote, not the artifacts themselves. A signature over
+          # artifact bytes proves only "WSO2 produced this file", which would leave a manifest free
+          # to offer an old signed artifact under a new version label; the statement binds
+          # id + version + sha256 (+ requires) so the client can check the manifest's claim.
           # -print0/-d '' so a path containing spaces or newlines cannot split into two arguments.
-          find artifacts-mirror -type f ! -name '*.sig' -print0 | while IFS= read -r -d '' file; do
+          count=0
+          find artifacts-mirror -type f -name '*.statement.json' -print0 | while IFS= read -r -d '' file; do
             cosign sign-blob --key env://COSIGN_PRIVATE_KEY "${file}" --output-signature "${file}.sig" --yes
             # Verify immediately: a signature that cannot be checked here would ship as one the
             # client rejects, turning a signing misconfiguration into a failed update for users.
             cosign verify-blob --key cosign.pub --signature "${file}.sig" "${file}"
-            echo "signed ${file}"
+            echo "signed $(basename "${file}")"
+            count=$((count + 1))
           done
           rm -f cosign.pub
+          # Every mirrored artifact must have one: an unsigned artifact would be served with a
+          # statement URL that 404s, which the client treats as a hard failure.
+          artifacts=$(find artifacts-mirror -type f ! -name '*.statement.json' ! -name '*.sig' | wc -l | tr -d ' ')
+          statements=$(find artifacts-mirror -type f -name '*.statement.json' | wc -l | tr -d ' ')
+          echo "artifacts=${artifacts} statements=${statements}"
+          if [ "${artifacts}" != "${statements}" ]; then
+            echo "Error: every mirrored artifact needs a signed statement (${artifacts} artifacts, ${statements} statements)." >&2
+            exit 1
+          fi
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}

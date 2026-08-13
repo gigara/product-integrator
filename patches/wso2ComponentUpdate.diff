@@ -268,7 +268,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Updat
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Update.ts
-@@ -0,0 +1,205 @@
+@@ -0,0 +1,215 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -306,14 +306,24 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Updat
 +	readonly sha256: string;
 +	readonly sizeBytes?: number;
 +	/**
-+	 * Detached cosign signature over the artifact bytes, verified against the pinned
-+	 * `wso2UpdatePublicKey`. Present only for artifacts mirrored to the WSO2 update bucket, which
-+	 * is where CI can sign them; a third-party source URL has no signature of ours. `certUrl` is
-+	 * only meaningful for keyless (Fulcio) signing, which we deliberately do not use.
++	 * Signed provenance for this artifact. `statementUrl` holds a small JSON document binding the
++	 * artifact's IDENTITY to its bytes — `{ id, version, sha256, sizeBytes, requires }` — and
++	 * `sigUrl` is the detached cosign signature over that document, verified against the pinned
++	 * `wso2UpdatePublicKey`.
++	 *
++	 * Signing the statement rather than the bytes is what makes the surrounding manifest
++	 * untrustworthy-by-design: a signature over bytes alone proves only "WSO2 produced this file",
++	 * so a manifest could offer an older signed artifact under a newer version label and the client
++	 * would install it, believe it was current, and then refuse the real fix (its version check only
++	 * moves forward). Binding id+version+digest into the signed document closes that, and carries
++	 * `requires` inside the signature so compatibility constraints cannot be relaxed either.
++	 *
++	 * Present only for artifacts mirrored to the WSO2 update bucket, which is where CI can sign
++	 * them; a third-party source URL has no statement of ours.
 +	 */
 +	readonly signature?: {
++		readonly statementUrl: string;
 +		readonly sigUrl: string;
-+		readonly certUrl?: string;
 +	};
 +}
 +
@@ -478,7 +488,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/wso2ComponentUpdateService.ts
-@@ -0,0 +1,1185 @@
+@@ -0,0 +1,1249 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -514,7 +524,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +import { ILogService } from '../../log/common/log.js';
 +import { IProductService } from '../../product/common/productService.js';
 +import { asText, IRequestService } from '../../request/common/request.js';
-+import { decodePublicKey, verifyDetachedSignature, verifyDetachedSignatureOfFile } from '../node/wso2UpdateVerification.js';
++import { decodePublicKey, verifyDetachedSignature } from '../node/wso2UpdateVerification.js';
 +import {
 +	IWso2Artifact,
 +	IWso2AvailableAppUpdate,
@@ -561,6 +571,24 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 + */
 +const DOWNLOAD_ATTEMPTS = 3;
 +const DOWNLOAD_RETRY_DELAYS_MS = [3000, 10000];
++
++/**
++ * What the manifest CLAIMS an artifact is. The signed statement fetched at download time must agree
++ * with every field here, so a manifest cannot relabel one signed artifact as another.
++ */
++interface IArtifactExpectation {
++	/** Component id, or `app` for the core-app installer. */
++	readonly id: string;
++	readonly version: string;
++	readonly sha256: string;
++	readonly requires?: { readonly [id: string]: string };
++	readonly signature?: IWso2Artifact['signature'];
++}
++
++/** Key-sorted entries, so two equal `requires` maps compare equal regardless of key order. */
++function sortedEntries(map: { readonly [id: string]: string }): [string, string][] {
++	return Object.entries(map).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
++}
 +
 +/** Carries whether a failed download attempt is worth repeating. */
 +class DownloadError extends Error {
@@ -1019,7 +1047,13 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		const dir = path.join(this.stagingHome, component.id, component.version);
 +		await fs.promises.mkdir(dir, { recursive: true });
 +		const vsixPath = path.join(dir, `${component.id}-${component.version}.vsix`);
-+		await this.downloadAndVerify(component.artifact.url, vsixPath, component.artifact.sha256, component.artifact.signature);
++		await this.downloadAndVerify(component.artifact.url, vsixPath, {
++			id: component.id,
++			version: component.version,
++			sha256: component.artifact.sha256,
++			requires: component.requires,
++			signature: component.artifact.signature
++		});
 +		return vsixPath;
 +	}
 +
@@ -1030,7 +1064,13 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		await fs.promises.mkdir(stagingDir, { recursive: true });
 +
 +		const archivePath = path.join(stagingDir, `${component.id}-${component.version}.zip`);
-+		await this.downloadAndVerify(component.artifact.url, archivePath, component.artifact.sha256, component.artifact.signature);
++		await this.downloadAndVerify(component.artifact.url, archivePath, {
++			id: component.id,
++			version: component.version,
++			sha256: component.artifact.sha256,
++			requires: component.requires,
++			signature: component.artifact.signature
++		});
 +		this.logService.info(`[wso2Update] verified ${component.id}@${component.version}; extracting`);
 +
 +		const extractDir = path.join(stagingDir, 'extracted');
@@ -1086,7 +1126,8 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		return extractDir;
 +	}
 +
-+	private async downloadAndVerify(url: string, destPath: string, expectedSha256: string, signature?: IWso2Artifact['signature']): Promise<void> {
++	private async downloadAndVerify(url: string, destPath: string, expected: IArtifactExpectation): Promise<void> {
++		const expectedSha256 = expected.sha256;
 +		if (!this.isAllowedUrl(url)) {
 +			throw new Error(`Artifact host not allowed: ${url}`);
 +		}
@@ -1099,7 +1140,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +				// Still verify provenance: a file left on disk by an earlier attempt has only been
 +				// shown to match the expected hash, and skipping the check here would make the
 +				// reuse path weaker than a fresh download.
-+				await this.verifyArtifactSignature(destPath, url, signature);
++				await this.verifyArtifactStatement(url, expected);
 +				return;
 +			}
 +		} catch {
@@ -1108,7 +1149,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt++) {
 +			try {
 +				await this.downloadAttempt(url, destPath, expectedSha256);
-+				await this.verifyArtifactSignature(destPath, url, signature);
++				await this.verifyArtifactStatement(url, expected);
 +				return;
 +			} catch (err) {
 +				const retryable = err instanceof DownloadError ? err.retryable : true;
@@ -1123,43 +1164,75 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +	}
 +
 +	/**
-+	 * Verifies the artifact's detached cosign signature against the pinned public key, which is what
-+	 * lets the manifest itself be treated as untrusted metadata later (server-composed, per-client
-+	 * responses): provenance then rests on the artifact, not on who described it.
++	 * Verifies the artifact's signed STATEMENT — a small JSON document binding id, version and digest
++	 * — against the pinned public key, and checks it agrees with what the manifest claimed.
 +	 *
-+	 * A declared-but-invalid signature is always fatal. A MISSING signature is fatal only when the
-+	 * product sets wso2UpdateRequireArtifactSignature, because until every artifact is mirrored to
-+	 * the WSO2 bucket some manifests legitimately reference third-party source URLs we cannot sign.
-+	 * Failures here are not retryable — re-downloading identical bytes cannot fix provenance.
++	 * This is what lets the manifest be treated as untrusted metadata (server-composed, per-client):
++	 * a signature over bytes alone would let a manifest offer an older signed artifact under a newer
++	 * version label, which the client would install, record as current, and then never replace,
++	 * because its version comparison only moves forward. Binding the identity into the signed
++	 * document removes that. `requires` travels inside the statement for the same reason, so
++	 * compatibility constraints cannot be quietly relaxed by whoever composed the manifest.
++	 *
++	 * A declared-but-invalid statement is always fatal. A MISSING one is fatal only under
++	 * wso2UpdateRequireArtifactSignature, since until every artifact is mirrored some manifests
++	 * legitimately reference third-party sources we cannot sign. Nothing here is retryable —
++	 * re-downloading identical bytes cannot change provenance.
 +	 */
-+	private async verifyArtifactSignature(filePath: string, url: string, signature?: IWso2Artifact['signature']): Promise<void> {
++	private async verifyArtifactStatement(url: string, expected: IArtifactExpectation): Promise<void> {
 +		const publicKey = decodePublicKey(this.productService.wso2UpdatePublicKey);
 +		if (!publicKey) {
 +			return; // no pinned key configured: sha256 + TLS + host allowlist only (dev/test builds)
 +		}
-+		const sigUrl = signature?.sigUrl;
-+		if (!sigUrl) {
++		const signature = expected.signature;
++		if (!signature?.statementUrl || !signature?.sigUrl) {
 +			if (this.productService.wso2UpdateRequireArtifactSignature) {
-+				throw new DownloadError(`No signature declared for ${url} and artifact signatures are required`, false);
++				throw new DownloadError(`No signed statement for ${url} and artifact signatures are required`, false);
 +			}
-+			this.logService.info(`[wso2Update] ${url} has no artifact signature; verified by sha256 only`);
++			this.logService.info(`[wso2Update] ${url} has no signed statement; verified by sha256 only`);
 +			return;
 +		}
-+		if (!this.isAllowedUrl(sigUrl)) {
-+			throw new DownloadError(`Signature host not allowed: ${sigUrl}`, false);
++		for (const target of [signature.statementUrl, signature.sigUrl]) {
++			if (!this.isAllowedUrl(target)) {
++				throw new DownloadError(`Statement host not allowed: ${target}`, false);
++			}
 +		}
-+		const context = await this.requestService.request(
-+			{ url: sigUrl, headers: this.authHeaders(sigUrl), callSite: 'wso2Update.artifactSignature' },
-+			CancellationToken.None);
++
++		const statementRaw = await this.fetchTextOrThrow(signature.statementUrl, 'wso2Update.artifactStatement');
++		const signatureBase64 = await this.fetchTextOrThrow(signature.sigUrl, 'wso2Update.artifactStatementSignature');
++		if (!verifyDetachedSignature(Buffer.from(statementRaw, 'utf8'), signatureBase64, publicKey)) {
++			throw new DownloadError(`Statement signature verification failed for ${url}`, false);
++		}
++
++		let statement: { id?: string; version?: string; sha256?: string; requires?: { [id: string]: string } };
++		try {
++			statement = JSON.parse(statementRaw);
++		} catch (err) {
++			throw new DownloadError(`Unparseable signed statement for ${url}: ${err}`, false);
++		}
++		// Every field the manifest claimed must match the signed document. sha256 is the link to the
++		// bytes on disk, which downloadAttempt() has already checked against this same value.
++		const mismatch = statement.id !== expected.id ? `id '${statement.id}' != '${expected.id}'`
++			: statement.version !== expected.version ? `version '${statement.version}' != '${expected.version}'`
++				: (statement.sha256 ?? '').toLowerCase() !== expected.sha256.toLowerCase() ? 'sha256 mismatch'
++					: undefined;
++		if (mismatch) {
++			throw new DownloadError(`Signed statement does not match the manifest for ${url}: ${mismatch}`, false);
++		}
++		// A statement that carries requires pins them: the manifest may not widen, narrow or drop them.
++		if (statement.requires && JSON.stringify(sortedEntries(statement.requires)) !== JSON.stringify(sortedEntries(expected.requires ?? {}))) {
++			throw new DownloadError(`Signed statement's requires differ from the manifest for ${url}`, false);
++		}
++		this.logService.info(`[wso2Update] verified signed statement for ${expected.id}@${expected.version}`);
++	}
++
++	/** GETs a small text resource (statement / signature), failing hard rather than retrying. */
++	private async fetchTextOrThrow(url: string, callSite: string): Promise<string> {
++		const context = await this.requestService.request({ url, headers: this.authHeaders(url), callSite }, CancellationToken.None);
 +		if (context.res.statusCode !== 200) {
-+			throw new DownloadError(`Missing artifact signature ${sigUrl} (HTTP ${context.res.statusCode})`, false);
++			throw new DownloadError(`Failed to fetch ${url} (HTTP ${context.res.statusCode})`, false);
 +		}
-+		const signatureBase64 = (await asText(context)) ?? '';
-+		if (!await verifyDetachedSignatureOfFile(filePath, signatureBase64, publicKey)) {
-+			await fs.promises.rm(filePath, { force: true });
-+			throw new DownloadError(`Artifact signature verification failed for ${url}`, false);
-+		}
-+		this.logService.info(`[wso2Update] artifact signature verified for ${url}`);
++		return (await asText(context)) ?? '';
 +	}
 +
 +	/**
@@ -1405,7 +1478,8 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		await fs.promises.mkdir(downloadsHome, { recursive: true });
 +		const msiPath = path.join(downloadsHome, `wso2-integrator-${app.version}-update.msi`);
 +		this.logService.info(`[wso2Update] downloading app update ${app.version} MSI`);
-+		await this.downloadAndVerify(url, msiPath, sha256, signature);
++		// `app` is the reserved statement id for the core-app installer.
++		await this.downloadAndVerify(url, msiPath, { id: 'app', version: app.version, sha256, signature });
 +		this.logService.info(`[wso2Update] verified app update MSI at ${msiPath}; scheduling silent install on quit`);
 +
 +		// Apply the editor-only MSI on quit, then relaunch — deterministically. The earlier approach
@@ -2836,7 +2910,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2UpdateV
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2UpdateVerification.ts
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,63 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -2855,8 +2929,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2UpdateV
 + * under the License.
 + */
 +
-+import { createVerify, verify } from 'crypto';
-+import { createReadStream } from 'fs';
++import { verify } from 'crypto';
 +
 +/**
 + * Verifies a detached cosign signature over `data` using a fixed public key.
@@ -2880,40 +2953,6 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2UpdateV
 +	for (const dsaEncoding of ['der', 'ieee-p1363'] as const) {
 +		try {
 +			if (verify('sha256', data, { key: publicKeyPem, dsaEncoding }, signature)) {
-+				return true;
-+			}
-+		} catch {
-+			// try the next encoding
-+		}
-+	}
-+	return false;
-+}
-+
-+/**
-+ * Same verification as verifyDetachedSignature(), but streamed from a file so a component artifact
-+ * (hundreds of MB) is never held in memory — this runs in the main process. Reads the file once per
-+ * candidate signature encoding, which is cheap next to the download that produced it.
-+ */
-+export async function verifyDetachedSignatureOfFile(filePath: string, signatureBase64: string, publicKeyPem: string): Promise<boolean> {
-+	let signature: Buffer;
-+	try {
-+		signature = Buffer.from(signatureBase64.trim(), 'base64');
-+	} catch {
-+		return false;
-+	}
-+	if (signature.length === 0 || !publicKeyPem) {
-+		return false;
-+	}
-+	for (const dsaEncoding of ['der', 'ieee-p1363'] as const) {
-+		try {
-+			const verifier = createVerify('sha256');
-+			await new Promise<void>((resolve, reject) => {
-+				const stream = createReadStream(filePath);
-+				stream.on('error', reject);
-+				stream.on('data', chunk => verifier.update(chunk));
-+				stream.on('end', () => resolve());
-+			});
-+			if (verifier.verify({ key: publicKeyPem, dsaEncoding }, signature)) {
 +				return true;
 +			}
 +		} catch {

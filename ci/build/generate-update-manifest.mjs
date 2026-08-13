@@ -172,6 +172,20 @@ async function hashLocalFile(filePath, mirrorPath) {
 	return { sha256: hash.digest('hex'), sizeBytes: size };
 }
 
+// Writes the signed-statement source document next to a mirrored artifact. CI signs this file, not
+// the artifact: a signature over bytes alone would prove only that WSO2 produced them, leaving a
+// manifest free to offer an old signed artifact under a new version label. Binding id + version +
+// digest (+ requires) into the signed document is what the client checks against the manifest's claim.
+function writeStatement(mirrorPath, { id, version, sha256, sizeBytes, requires }) {
+	const statement = { schemaVersion: 1, id, version, sha256, sizeBytes };
+	if (requires && Object.keys(requires).length > 0) {
+		statement.requires = requires;
+	}
+	const statementPath = `${mirrorPath}.statement.json`;
+	writeFileSync(statementPath, JSON.stringify(statement, null, 2) + '\n');
+	return statementPath;
+}
+
 async function main() {
 	const args = parseArgs(process.argv.slice(2));
 	const channel = args.channel || 'stable';
@@ -288,6 +302,10 @@ async function main() {
 			: path.posix.basename(decodeURIComponent(new URL(sourceUrl).pathname)), 'file name');
 		const relPath = `components/${safeSegment(component.id, 'component id')}/${safeSegment(version, 'version')}/${fileName}`;
 
+const requires = component.requires
+			? Object.fromEntries(Object.entries(component.requires).map(([k, v]) => [k, substitute(v, substitutionVars)]))
+			: undefined;
+
 		const artifact = {};
 		if (artifactsBase) {
 			artifact.url = `${artifactsBase}/${relPath}`;
@@ -311,13 +329,22 @@ async function main() {
 		// the mirror dir and uploads `<file>.sig` next to it. A third-party source URL has no such
 		// file, so promising one would make the client reject an artifact it can never verify.
 		if (artifactsBase) {
-			artifact.signature = { sigUrl: `${artifactsBase}/${relPath}.sig` };
+			artifact.signature = {
+				statementUrl: `${artifactsBase}/${relPath}.statement.json`,
+				sigUrl: `${artifactsBase}/${relPath}.statement.json.sig`
+			};
+			if (!noDownload) {
+				writeStatement(path.join(mirrorDir, relPath), {
+					id: component.id,
+					version,
+					sha256: artifact.sha256,
+					sizeBytes: artifact.sizeBytes,
+					requires
+				});
+			}
 		}
 
-		const requires = component.requires
-			? Object.fromEntries(Object.entries(component.requires).map(([k, v]) => [k, substitute(v, substitutionVars)]))
-			: undefined;
-
+		
 		components.push({
 			id: component.id,
 			kind: component.kind,
@@ -346,7 +373,18 @@ async function main() {
 			installer.sizeBytes = sizeBytes;
 		}
 		if (artifactsBase) {
-			installer.signature = { sigUrl: `${artifactsBase}/${relPath}.sig` };
+			installer.signature = {
+				statementUrl: `${artifactsBase}/${relPath}.statement.json`,
+				sigUrl: `${artifactsBase}/${relPath}.statement.json.sig`
+			};
+			if (!noDownload) {
+				writeStatement(path.join(mirrorDir, relPath), {
+					id: 'app',
+					version: appVersion,
+					sha256: installer.sha256,
+					sizeBytes: installer.sizeBytes
+				});
+			}
 		}
 		app = { version: appVersion, minAutoUpdateFromVersion: args['app-min-version'] || undefined, installer };
 		// The commit this build was produced from (product-integrator root sha). The update
