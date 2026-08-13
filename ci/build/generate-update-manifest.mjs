@@ -197,10 +197,21 @@ async function main() {
 	const config = JSON.parse(readFileSync(configPath, 'utf8'));
 	const versions = readVersions(versionsPath);
 
-	const targets = config.targets;
-	if (!Array.isArray(targets) || targets.length === 0) {
+	const configuredTargets = config.targets;
+	if (!Array.isArray(configuredTargets) || configuredTargets.length === 0) {
 		throw new Error('config.targets must list the platform-arch pairs to publish');
 	}
+	// A release may build only some platforms. Publishing a document that describes targets this
+	// run did not produce would point clients at release assets that never existed, so CI passes
+	// the ones it actually built and anything else is left out entirely.
+	const requestedTargets = typeof args.targets === 'string' && args.targets
+		? args.targets.split(',').map(t => t.trim()).filter(Boolean)
+		: configuredTargets;
+	const unknown = requestedTargets.filter(t => !configuredTargets.includes(t));
+	if (unknown.length > 0) {
+		throw new Error(`--targets names targets missing from config.targets: ${unknown.join(', ')}`);
+	}
+	const targets = requestedTargets;
 
 	// Mirror mode: artifacts are re-hosted on the update bucket/CDN and the source points there.
 	const artifactsBase = typeof args['artifacts-base'] === 'string' ? args['artifacts-base'].replace(/\/+$/, '') : '';

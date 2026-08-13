@@ -1538,8 +1538,8 @@ jobs:
             echo "Removed superseded asset ${name}"
           done <<< "${superseded}"
 
-  publish-update-manifest:
-    name: Publish Update Manifest
+  publish-update-source:
+    name: Publish Update Source
     runs-on: ubuntu-latest
     needs: [resolve-versions, publish-github-release]
     if: |
@@ -1550,27 +1550,16 @@ jobs:
     permissions:
       id-token: write
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { platform: darwin, arch: arm64 }
-          - { platform: darwin, arch: x64 }
-          - { platform: win32, arch: x64 }
-          - { platform: linux, arch: x64 }
     env:
       # New builds publish to the channel chosen at dispatch (default insider); the
-      # promote-channel workflow later copies a manifest down the ladder (insider → beta → stable).
+      # promote-channel workflow later copies a source document down the ladder.
       CHANNEL: ${{ inputs.channel || 'insider' }}
-      # Only publish a platform's manifest when that platform's build actually ran — otherwise the
-      # manifest would point clients at release assets that were never produced (CR #21).
-      PUBLISH: ${{ (matrix.platform == 'darwin' && inputs.build_macos == true) || (matrix.platform == 'win32' && inputs.build_windows == true) || (matrix.platform == 'linux' && inputs.build_linux == true) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           # Same ref every other job builds from. A caller that stamps a version branch passes it
-          # as `ref`, and the manifest is generated from ci/build/* plus
+          # as `ref`, and the source document is generated from ci/build/* plus
           # component-versions.properties — so checking out anything else would describe a build
           # that was never produced.
           ref: ${{ inputs.ref || github.ref }}
@@ -1583,39 +1572,41 @@ jobs:
       # The WI extension is built in-repo (no public download URL); its VSIX is mirrored to the
       # update bucket from this artifact (config `sourceFile`).
       - name: Download WI extension VSIX
-        if: ${{ env.PUBLISH == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: wi-extension-vsix
           path: wi/wi-extension
 
-      - name: Resolve installer URL
-        id: installer
-        if: ${{ env.PUBLISH == 'true' }}
+      # ONE document describes every platform this run actually built. A target that was not built
+      # is left out entirely rather than published with URLs to release assets that never existed.
+      - name: Resolve published targets
+        id: targets
         shell: bash
         run: |
-          V="${{ needs.resolve-versions.outputs.integrator_version }}"
-          case "${{ matrix.platform }}-${{ matrix.arch }}" in
-            darwin-arm64) FILE="wso2-integrator-${V}-arm64.dmg" ;;
-            darwin-x64)   FILE="wso2-integrator-${V}-x64.dmg" ;;
-            # Windows/Linux core-app updates use the small editor-only package (§D8), not the full first-install one.
-            win32-x64)    FILE="wso2-integrator-${V}-update.msi" ;;
-            linux-x64)    FILE="wso2-integrator_${V}_amd64-update.deb" ;;
-            *) echo "Unsupported platform/arch"; exit 1 ;;
-          esac
-          BASE="https://github.com/${{ github.repository }}/releases/download/v${V}"
-          echo "url=${BASE}/${FILE}" >> "$GITHUB_OUTPUT"
-          # Squirrel.Mac payload fallback for when no CDN is configured: the editor-only .app zip
-          # is also published as a release asset, so mac in-place updates are testable pre-CDN.
-          if [ "${{ matrix.platform }}" = "darwin" ]; then
-            echo "squirrel_url=${BASE}/wso2-integrator-${V}-${{ matrix.arch }}-mac.zip" >> "$GITHUB_OUTPUT"
+          TARGETS=()
+          if [ "${{ inputs.build_macos }}" = "true" ]; then
+            TARGETS+=("darwin-arm64" "darwin-x64")
           fi
+          if [ "${{ inputs.build_windows }}" = "true" ]; then
+            TARGETS+=("win32-x64")
+          fi
+          if [ "${{ inputs.build_linux }}" = "true" ]; then
+            TARGETS+=("linux-x64")
+          fi
+          if [ ${#TARGETS[@]} -eq 0 ]; then
+            echo "No platforms were built; nothing to publish."
+            echo "targets=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf -v JOINED '%s,' "${TARGETS[@]}"
+          echo "targets=${JOINED%,}" >> "$GITHUB_OUTPUT"
+          echo "publishing targets: ${JOINED%,}"
 
       # WSO2_UPDATE_ARTIFACTS_URL = the CDN base fronting s3://$AWS_UPDATE_S3_BUCKET/artifacts.
-      # When set, every artifact (components + app installer) is mirrored into artifacts-mirror/
-      # and the manifest points clients at the CDN only — no open-vsx/github in client URLs.
-      - name: Generate manifest
-        if: ${{ env.PUBLISH == 'true' }}
+      # When set, every artifact is mirrored into artifacts-mirror/ and the document points clients
+      # at the CDN only — no open-vsx/github in client URLs.
+      - name: Generate source document
+        if: ${{ steps.targets.outputs.targets != '' }}
         env:
           # Lets the generator hash release assets on a private repo (the enterprise mirror);
           # public repos serve them unauthenticated and ignore this.
@@ -1627,97 +1618,78 @@ jobs:
           fi
           node ci/build/generate-update-manifest.mjs \
             --channel "${CHANNEL}" \
-            --platform "${{ matrix.platform }}" \
-            --arch "${{ matrix.arch }}" \
+            --targets "${{ steps.targets.outputs.targets }}" \
             --sequence "${{ github.run_number }}" \
             --app-version "${{ needs.resolve-versions.outputs.integrator_version }}" \
-            --app-installer-url "${{ steps.installer.outputs.url }}" \
+            --app-release-base "https://github.com/${{ github.repository }}/releases/download/${{ inputs.publish_tag }}" \
             --app-commit "${{ github.sha }}" \
-            --app-squirrel-url "${{ steps.installer.outputs.squirrel_url }}" \
             --source-flavors "wso2.ballerina=${{ inputs.ballerina_extension_source || 'marketplace' }},wso2.micro-integrator=${{ inputs.mi_extension_source || 'marketplace' }}" \
             "${MIRROR_ARGS[@]}" \
-            --out manifest.json
-          echo "----- manifest.json -----"
-          cat manifest.json
+            --out source.json
+          echo "----- source.json -----"
+          cat source.json
 
       - name: cosign-installer
-        if: ${{ env.PUBLISH == 'true' }}
-        uses: sigstore/cosign-installer@v3.5.0
+        if: ${{ steps.targets.outputs.targets != '' }}
+        uses: sigstore/cosign-installer@v3
 
-      # Key-based (not keyless) signing: the client verifies the detached signature against
-      # the public key embedded in product.json (wso2UpdatePublicKey). COSIGN_PRIVATE_KEY /
-      # COSIGN_PASSWORD are repo secrets; the matching public key must be set as the
-      # WSO2_UPDATE_PUBLIC_KEY build input (base64 of cosign.pub) so the client can verify.
-      - name: Sign manifest
-        if: ${{ env.PUBLISH == 'true' }}
+      - name: Sign source document
+        if: ${{ steps.targets.outputs.targets != '' }}
+        run: cosign sign-blob --key env://COSIGN_PRIVATE_KEY source.json --output-signature source.json.sig --yes
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-        run: |
-          cosign sign-blob --key env://COSIGN_PRIVATE_KEY manifest.json --output-signature manifest.json.sig --yes
 
-      - name: Verify manifest signature
-        if: ${{ env.PUBLISH == 'true' }}
-        env:
-          COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
+      - name: Verify source signature
+        if: ${{ steps.targets.outputs.targets != '' }}
         run: |
           printf '%s' "$COSIGN_PUBLIC_KEY" > cosign.pub
-          cosign verify-blob --key cosign.pub --signature manifest.json.sig manifest.json
+          cosign verify-blob --key cosign.pub --signature source.json.sig source.json
           rm -f cosign.pub
+        env:
+          COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
 
-      # Also expose the signed manifest as a downloadable artifact: until the bucket/CDN is
-      # provisioned it has to be mounted on the update server by hand, and digging it out of
-      # the job log is awkward.
-      - name: Upload manifest artifact
-        if: ${{ env.PUBLISH == 'true' }}
+      - name: Upload source artifact
+        if: ${{ steps.targets.outputs.targets != '' }}
         uses: actions/upload-artifact@v4
         with:
-          name: update-manifest-${{ env.CHANNEL }}-${{ matrix.platform }}-${{ matrix.arch }}
+          name: update-source-${{ env.CHANNEL }}
           path: |
-            manifest.json
-            manifest.json.sig
-          if-no-files-found: error
+            source.json
+            source.json.sig
 
       - name: Login to AWS
-        if: ${{ env.PUBLISH == 'true' }}
-        uses: aws-actions/configure-aws-credentials@v5
+        if: ${{ steps.targets.outputs.targets != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
 
-      # Artifacts go up BEFORE the manifest so a client can never fetch a manifest that
-      # references not-yet-uploaded artifacts. Same key → same bytes across the platform
-      # matrix (extensions are platform-independent), so concurrent overwrites are benign.
       # Every mirrored artifact is cosigned so the CLIENT can verify provenance per artifact,
-      # independently of who described it. That is what allows the manifest to become
-      # server-composed (per-client / entitlement-driven) later without ever putting the signing
-      # key on the update server: trust rests on the artifact, not on the metadata around it.
-      # The client only enforces this when the manifest declares a signature, so a build without
-      # mirroring (no CDN configured) is unaffected.
+      # independently of who described it. That is what allows the source document to be composed
+      # per client by the server without ever putting the signing key on the update server.
       - name: Sign mirrored artifacts
-        if: ${{ env.PUBLISH == 'true' }}
+        if: ${{ steps.targets.outputs.targets != '' }}
         run: |
           if [ ! -d artifacts-mirror ]; then
             echo "No mirrored artifacts to sign."
             exit 0
           fi
-          # Public key as a file, matching the manifest verify step: cosign's env:// keyref is used
+          # Public key as a file, matching the source verify step: cosign's env:// keyref is used
           # for the private key, and the proven pattern here for verification is a key file.
           printf '%s' "$COSIGN_PUBLIC_KEY" > cosign.pub
           # Sign the STATEMENTS the generator wrote, not the artifacts themselves. A signature over
-          # artifact bytes proves only "WSO2 produced this file", which would leave a manifest free
+          # artifact bytes proves only "WSO2 produced this file", which would leave the document free
           # to offer an old signed artifact under a new version label; the statement binds
-          # id + version + sha256 (+ requires) so the client can check the manifest's claim.
+          # id + version + sha256 (+ requires) so the client can check the claim it was given.
           # -print0/-d '' so a path containing spaces or newlines cannot split into two arguments.
-          count=0
           find artifacts-mirror -type f -name '*.statement.json' -print0 | while IFS= read -r -d '' file; do
             cosign sign-blob --key env://COSIGN_PRIVATE_KEY "${file}" --output-signature "${file}.sig" --yes
             # Verify immediately: a signature that cannot be checked here would ship as one the
             # client rejects, turning a signing misconfiguration into a failed update for users.
             cosign verify-blob --key cosign.pub --signature "${file}.sig" "${file}"
             echo "signed $(basename "${file}")"
-            count=$((count + 1))
           done
           rm -f cosign.pub
           # Every mirrored artifact must have one: an unsigned artifact would be served with a
@@ -1735,22 +1707,21 @@ jobs:
           COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
 
       - name: Upload mirrored artifacts to update bucket
-        if: ${{ env.PUBLISH == 'true' }}
+        if: ${{ steps.targets.outputs.targets != '' }}
         run: |
           if [ -d artifacts-mirror ]; then
             aws s3 cp artifacts-mirror/ "s3://${{ secrets.AWS_UPDATE_S3_BUCKET }}/artifacts/" --recursive
           else
-            echo "WSO2_UPDATE_ARTIFACTS_URL unset — no mirrored artifacts; manifest points at source URLs."
+            echo "WSO2_UPDATE_ARTIFACTS_URL unset — no mirrored artifacts; the document points at source URLs."
           fi
 
-      - name: Upload manifest to update bucket
-        if: ${{ env.PUBLISH == 'true' }}
+      - name: Upload source document to update bucket
+        if: ${{ steps.targets.outputs.targets != '' }}
         run: |
-          # S3 is just storage behind the update server (the client hits the server's
-          # /api/v1/updates route, never S3), so the key needn't mirror the API path.
-          DEST="s3://${{ secrets.AWS_UPDATE_S3_BUCKET }}/manifests/${CHANNEL}/${{ matrix.platform }}/${{ matrix.arch }}/"
-          aws s3 cp manifest.json "${DEST}manifest.json" --content-type application/json --cache-control no-cache
-          aws s3 cp manifest.json.sig "${DEST}manifest.json.sig" --content-type text/plain --cache-control no-cache
-          echo "Published ${CHANNEL}/${{ matrix.platform }}/${{ matrix.arch }} manifest (sequence ${{ github.run_number }})"
-
-
+          # The server reads this; clients never do. Keep the manifests/ prefix PRIVATE — a publicly
+          # readable source document would let a client bypass the server and with it the
+          # kill-switch, rollout and entitlement decisions.
+          DEST="s3://${{ secrets.AWS_UPDATE_S3_BUCKET }}/manifests/${CHANNEL}/"
+          aws s3 cp source.json "${DEST}source.json" --content-type application/json --cache-control no-cache
+          aws s3 cp source.json.sig "${DEST}source.json.sig" --content-type text/plain --cache-control no-cache
+          echo "Published ${CHANNEL} source document (sequence ${{ github.run_number }}, targets ${{ steps.targets.outputs.targets }})"
