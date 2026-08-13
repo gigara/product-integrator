@@ -268,7 +268,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Updat
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Update.ts
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,224 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -327,45 +327,54 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Updat
 +	};
 +}
 +
-+/** A single updatable component in the server manifest. */
-+export interface IWso2ManifestComponent {
++/**
++ * What the client reports about itself on an update check. The server decides from this, so it has
++ * to be complete: `components` lists EVERY component the client has, bundled versions included,
++ * because a component the server does not hear about is one it must treat as absent.
++ *
++ * `bucket` is a stable 0-99 slot derived locally from a device id that is deliberately never sent,
++ * so staged rollout works without the server being able to identify the machine.
++ */
++export interface IWso2UpdateCheckRequest {
++	readonly channel: string;
++	readonly platform: string;
++	readonly arch: string;
++	readonly appVersion: string;
++	readonly appCommit?: string;
++	readonly components: { readonly [id: string]: string };
++	readonly bucket: number;
++}
++
++/** One component the server decided this client should take. */
++export interface IWso2ComponentOffer {
 +	readonly id: string;
 +	readonly kind: Wso2ComponentKind;
 +	readonly version: string;
 +	readonly artifact: IWso2Artifact;
-+	/** Semver ranges keyed by component id or the literal `app`. */
++	/** Compatibility constraints, re-checked against the artifact's SIGNED statement before install. */
 +	readonly requires?: { readonly [id: string]: string };
 +	readonly releaseNotesUrl?: string;
-+	readonly rollout?: { readonly percentage: number };
 +}
 +
-+/** The full-app installer entry in the server manifest. */
-+export interface IWso2ManifestApp {
++/** The core-app offer, carrying whichever payload this platform applies. */
++export interface IWso2AppOffer {
 +	readonly version: string;
-+	readonly minAutoUpdateFromVersion?: string;
++	readonly commit?: string;
 +	readonly installer: IWso2Artifact;
++	readonly squirrel?: { readonly url: string };
 +	readonly releaseNotesUrl?: string;
-+	readonly rollout?: { readonly percentage: number };
 +}
 +
-+/** The tested "release train" the client offers as a single bundle. */
-+export interface IWso2RecommendedSet {
-+	readonly name: string;
-+	readonly members: { readonly [id: string]: string };
-+}
-+
-+/** The signed manifest served per (channel, platform, arch). */
-+export interface IWso2UpdateManifest {
-+	readonly schemaVersion: number;
-+	readonly channel: string;
-+	readonly platform: string;
-+	readonly arch: string;
-+	readonly sequence: number;
-+	readonly publishedAt?: string;
-+	readonly expiresAt?: string;
-+	readonly app?: IWso2ManifestApp;
-+	readonly components: readonly IWso2ManifestComponent[];
-+	readonly recommendedSet?: IWso2RecommendedSet;
++/**
++ * The server's answer. Composed per client and therefore NOT signed — provenance comes from each
++ * artifact's signed statement, which is why the client verifies those before installing anything
++ * and applies its own forward-only rule regardless of what this says.
++ */
++export interface IWso2UpdateCheckResponse {
++	readonly app?: IWso2AppOffer;
++	readonly components: readonly IWso2ComponentOffer[];
++	readonly checkedAt?: string;
++	readonly sequence?: number;
 +}
 +
 +/** Per-component view used by the update flow and the Components UI. */
@@ -488,7 +497,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/wso2ComponentUpdateService.ts
-@@ -0,0 +1,1272 @@
+@@ -0,0 +1,1246 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -516,7 +525,6 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +import { Emitter } from '../../../base/common/event.js';
 +import { Disposable, DisposableStore } from '../../../base/common/lifecycle.js';
 +import { CancellationToken } from '../../../base/common/cancellation.js';
-+import { VSBuffer, streamToBuffer } from '../../../base/common/buffer.js';
 +import { listenStream } from '../../../base/common/stream.js';
 +import { extract } from '../../../base/node/zip.js';
 +import { IConfigurationService } from '../../configuration/common/configuration.js';
@@ -531,9 +539,10 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +	IWso2AvailableUpdate,
 +	IWso2ComponentStatus,
 +	IWso2ComponentUpdateService,
-+	IWso2ManifestComponent,
++	IWso2ComponentOffer,
 +	IWso2StagedExtension,
-+	IWso2UpdateManifest,
++	IWso2UpdateCheckRequest,
++	IWso2UpdateCheckResponse,
 +	Wso2UpdateState,
 +	Wso2UpdateStateType
 +} from '../common/wso2Update.js';
@@ -611,8 +620,8 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		this._onStateChange.fire(state);
 +	}
 +
-+	/** The last verified manifest, retained so downloadUpdates() can act on the offered set. */
-+	private lastManifest: IWso2UpdateManifest | undefined;
++	/** The server's last answer, retained so downloadUpdates() can act on the offered set. */
++	private lastResponse: IWso2UpdateCheckResponse | undefined;
 +
 +	/**
 +	 * Bearer token for update-server requests, supplied by the workbench (see
@@ -750,16 +759,17 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +	private async doCheckForUpdates(explicit: boolean): Promise<void> {
 +		this.setState({ type: Wso2UpdateStateType.CheckingForUpdates, explicit });
 +		try {
-+			const manifest = await this.fetchManifest();
-+			if (!manifest) {
++			const response = await this.fetchUpdates();
++			if (!response) {
++				this.lastResponse = undefined;
 +				this.setState({ type: Wso2UpdateStateType.Idle });
 +				return;
 +			}
-+			this.lastManifest = manifest;
-+			this.persistCheckMetadata(manifest);
++			this.lastResponse = response;
++			this.persistCheckMetadata(response);
 +
-+			const updates = this.resolveOfferedUpdates(manifest);
-+			const appUpdate = this.resolveAppUpdate(manifest);
++			const updates = this.resolveOfferedUpdates(response);
++			const appUpdate = this.resolveAppUpdate(response);
 +
 +			if (updates.length === 0 && !appUpdate) {
 +				this.setState({ type: Wso2UpdateStateType.Idle });
@@ -773,113 +783,114 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		}
 +	}
 +
-+	private async fetchManifest(): Promise<IWso2UpdateManifest | undefined> {
-+		const url = `${this.updateBaseUrl}/api/v1/updates/${this.channel}/${this.platformKey()}/${this.archKey()}/manifest.json`;
++	/**
++	 * Asks the server what this client should take. The request carries everything the decision
++	 * needs — platform, arch, app version and the FULL component inventory — because the server
++	 * cannot tell "not installed" from "not reported" and fails a dependency check closed.
++	 *
++	 * The response is composed per client and therefore unsigned. That is safe only because every
++	 * artifact it names is verified against its own signed statement before installation, and
++	 * because the offers below are re-checked against local state rather than taken on trust.
++	 */
++	private async fetchUpdates(): Promise<IWso2UpdateCheckResponse | undefined> {
++		const url = `${this.updateBaseUrl}/api/v1/updates`;
 +		if (!this.isAllowedUrl(url)) {
-+			throw new Error(`Manifest host not allowed: ${url}`);
++			throw new Error(`Update server host not allowed: ${url}`);
 +		}
-+		const appVersion = this.appVersion();
-+		const manifestUrl = `${url}?appVersion=${encodeURIComponent(appVersion)}`;
-+		const context = await this.requestService.request(
-+			{ url: manifestUrl, headers: this.authHeaders(manifestUrl), callSite: 'wso2Update.checkForUpdates' },
-+			CancellationToken.None);
++		const payload: IWso2UpdateCheckRequest = {
++			channel: this.channel,
++			platform: this.platformKey(),
++			arch: this.archKey(),
++			appVersion: this.appVersion(),
++			...(this.productService.commit ? { appCommit: this.productService.commit } : {}),
++			components: this.componentInventory(),
++			bucket: this.rolloutBucket()
++		};
++		const context = await this.requestService.request({
++			type: 'POST',
++			url,
++			headers: { 'Content-Type': 'application/json', ...(this.authHeaders(url) ?? {}) },
++			data: JSON.stringify(payload),
++			callSite: 'wso2Update.checkForUpdates'
++		}, CancellationToken.None);
 +		if (context.res.statusCode === 204) {
-+			return undefined;
++			return undefined; // nothing for this client
 +		}
 +		if (context.res.statusCode !== 200) {
-+			throw new Error(`Unexpected status ${context.res.statusCode} fetching manifest`);
++			throw new Error(`Unexpected status ${context.res.statusCode} checking for updates`);
 +		}
-+		// Read the raw bytes so the cosign signature can be verified over exactly what was served.
-+		const raw = await streamToBuffer(context.stream);
-+		await this.verifyManifestSignature(url, raw);
-+		const manifest = JSON.parse(raw.toString()) as IWso2UpdateManifest;
-+		this.validateManifest(manifest);
-+		return manifest;
++		const text = (await asText(context)) ?? '';
++		const response = JSON.parse(text) as IWso2UpdateCheckResponse;
++		if (!Array.isArray(response.components)) {
++			throw new Error('Malformed update response: components missing');
++		}
++		return response;
 +	}
 +
 +	/**
-+	 * Verifies the manifest's detached cosign signature against the embedded public key.
-+	 * When no public key is configured (`product.wso2UpdatePublicKey`), verification is
-+	 * skipped with a warning — integrity then rests on TLS + the host allowlist + per-artifact
-+	 * sha256. When a key IS configured, a missing or invalid signature is fatal.
++	 * Every component this client has, bundled versions included — runtimes from the product's
++	 * bundled set, extensions from its built-in list, both overlaid with any local override. The
++	 * server treats an unreported component as absent, so an incomplete inventory silently
++	 * withholds anything that depends on it.
 +	 */
-+	private async verifyManifestSignature(manifestUrl: string, raw: VSBuffer): Promise<void> {
-+		const publicKey = decodePublicKey(this.productService.wso2UpdatePublicKey);
-+		if (!publicKey) {
-+			this.logService.warn('[wso2Update] manifest signature verification disabled (no wso2UpdatePublicKey configured)');
-+			return;
-+		}
-+		const signatureUrl = `${manifestUrl}.sig`;
-+		if (!this.isAllowedUrl(signatureUrl)) {
-+			throw new Error(`Signature host not allowed: ${signatureUrl}`);
-+		}
-+		const signatureContext = await this.requestService.request(
-+			{ url: signatureUrl, headers: this.authHeaders(signatureUrl), callSite: 'wso2Update.manifestSignature' },
-+			CancellationToken.None);
-+		if (signatureContext.res.statusCode !== 200) {
-+			throw new Error(`Missing manifest signature (HTTP ${signatureContext.res.statusCode})`);
-+		}
-+		const signatureBase64 = (await asText(signatureContext)) ?? '';
-+		if (!verifyDetachedSignature(Buffer.from(raw.buffer), signatureBase64, publicKey)) {
-+			throw new Error('Manifest signature verification failed');
-+		}
-+		this.logService.trace('[wso2Update] manifest signature verified');
-+	}
-+
-+	private validateManifest(manifest: IWso2UpdateManifest): void {
-+		if (manifest.platform !== this.platformKey() || manifest.arch !== this.archKey()) {
-+			throw new Error('Manifest platform/arch mismatch');
-+		}
-+		if (manifest.expiresAt && Date.parse(manifest.expiresAt) < Date.now()) {
-+			throw new Error('Manifest has expired');
-+		}
-+		const lastSequence = readLocalManifest(this.componentsHome)?.lastManifestSequence;
-+		if (typeof lastSequence === 'number' && typeof manifest.sequence === 'number' && manifest.sequence < lastSequence) {
-+			throw new Error(`Manifest sequence ${manifest.sequence} is older than last accepted ${lastSequence}`);
-+		}
-+	}
-+
-+	//#endregion
-+
-+	//#region resolution
-+
-+	private resolveOfferedUpdates(manifest: IWso2UpdateManifest): IWso2AvailableUpdate[] {
++	private componentInventory(): { [id: string]: string } {
 +		const local = readLocalManifest(this.componentsHome);
-+		const byId = new Map(manifest.components.map(c => [c.id, c]));
++		const inventory: { [id: string]: string } = {};
++		for (const id of Object.keys(this.productService.bundledComponents ?? {})) {
++			const version = this.activeVersion(id, local);
++			if (version) {
++				inventory[id] = version;
++			}
++		}
++		for (const extension of this.productService.builtInExtensions ?? []) {
++			const version = this.activeVersion(extension.name, local) ?? extension.version;
++			if (version) {
++				inventory[extension.name] = version;
++			}
++		}
++		for (const [id, entry] of Object.entries(local?.components ?? {})) {
++			const version = entry.active?.version ?? entry.bundledVersion;
++			if (version && !inventory[id]) {
++				inventory[id] = version;
++			}
++		}
++		return inventory;
++	}
 +
-+		// Start from the recommended set when present, else consider every component.
-+		const candidateIds = manifest.recommendedSet
-+			? Object.keys(manifest.recommendedSet.members)
-+			: manifest.components.map(c => c.id);
-+		const projected = this.projectedVersions(manifest);
++	/**
++	 * This machine's stable 0-99 rollout slot. Derived from the local device id, which is NEVER
++	 * transmitted — the server gets the slot alone, enough to stage a rollout without being able to
++	 * identify the machine. Deliberately not per-component: the server cannot recompute a
++	 * per-component value without the device id, and the cost is that the same machines lead every
++	 * staged rollout.
++	 */
++	private rolloutBucket(): number {
++		return parseInt(createHash('sha1').update(this.deviceId()).digest('hex').slice(0, 8), 16) % 100;
++	}
 +
++	private resolveOfferedUpdates(response: IWso2UpdateCheckResponse): IWso2AvailableUpdate[] {
++		const local = readLocalManifest(this.componentsHome);
++		const projected = this.projectedVersions(response);
 +		const offered: IWso2AvailableUpdate[] = [];
-+		for (const id of candidateIds) {
-+			const component = byId.get(id);
-+			if (!component) {
++		for (const component of response.components) {
++			const activeVersion = this.activeVersion(component.id, local);
++			// Forward-only, enforced here and not merely upstream: this is what stops a stale or
++			// tampered answer from reinstalling an older component over a newer one.
++			if (activeVersion && compareVersions(component.version, activeVersion) <= 0) {
++				this.logService.info(`[wso2Update] ignoring ${component.id}@${component.version}: not newer than ${activeVersion}`);
 +				continue;
 +			}
-+			const activeVersion = this.activeVersion(id, local);
-+			if (activeVersion && compareVersions(component.version, activeVersion) <= 0) {
-+				continue; // already current or newer
-+			}
 +			// Already downloaded and staged for the next restart — don't re-offer/re-download.
-+			const pendingVersion = local?.components[id]?.pending?.version;
++			const pendingVersion = local?.components[component.id]?.pending?.version;
 +			if (pendingVersion && compareVersions(pendingVersion, component.version) >= 0) {
 +				continue;
 +			}
-+			if (!this.passesRollout(component)) {
-+				// Logged at info, not trace: "why is there no update?" is exactly the question this
-+				// answers, and the default log level does not record trace.
-+				this.logService.info(`[wso2Update] withholding ${id}@${component.version}: outside the rollout percentage`);
-+				continue;
-+			}
-+			if (!this.requiresSatisfied(component, manifest, local, projected)) {
-+				this.logService.info(`[wso2Update] withholding ${id}@${component.version}: unmet requirements`);
++			if (!this.requiresSatisfied(component, local, projected)) {
++				this.logService.info(`[wso2Update] ignoring ${component.id}@${component.version}: unmet requirements`);
 +				continue;
 +			}
 +			offered.push({
-+				id,
++				id: component.id,
 +				kind: component.kind,
 +				fromVersion: activeVersion,
 +				toVersion: component.version,
@@ -889,9 +900,13 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		return offered;
 +	}
 +
++	/**
++	 * Whether a component's `requires` hold for this machine. `app` is compared against the version
++	 * running RIGHT NOW — never one a queued update would reach — because the user may never
++	 * restart, and a component needing the newer app must not land on the older one meanwhile.
++	 */
 +	private requiresSatisfied(
-+		component: IWso2ManifestComponent,
-+		manifest: IWso2UpdateManifest,
++		component: IWso2ComponentOffer,
 +		local: ILocalComponentsManifest | undefined,
 +		projected: Map<string, string>
 +	): boolean {
@@ -914,32 +929,9 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +	}
 +
 +	/**
-+	 * Versions that would be present if the whole recommended/candidate set were applied — used for
-+	 * the `requires` closure so a set that upgrades a dependency together is allowed. Shared by
-+	 * resolveOfferedUpdates and getComponentStatuses so both agree on what is offered.
-+	 */
-+	private projectedVersions(manifest: IWso2UpdateManifest): Map<string, string> {
-+		const byId = new Map(manifest.components.map(c => [c.id, c]));
-+		const candidateIds = manifest.recommendedSet
-+			? Object.keys(manifest.recommendedSet.members)
-+			: manifest.components.map(c => c.id);
-+		const projected = new Map<string, string>();
-+		for (const id of candidateIds) {
-+			const c = byId.get(id);
-+			if (c) {
-+				projected.set(id, c.version);
-+			}
-+		}
-+		return projected;
-+	}
-+
-+	/**
-+	 * Evaluate a manifest `requires` range against a version with the 4-part-aware
-+	 * `compareVersions` — NOT semver. App versions are 4-part (e.g. `5.0.0.2`) and not valid semver,
-+	 * so `semver.satisfies` rejects any range built from them (e.g. `>=5.0.0.2`) and would silently
-+	 * drop every update (all components require `app`). The manifest only uses simple comparator
-+	 * ranges (`>=X`, optionally space-separated ANDs); an unrecognized comparator is accepted rather
-+	 * than blocking, so a future range form can never strand updates.
++	 * Whitespace-separated comparators, all of which must hold: ">=5.1.0 <5.2.0". Mirrors the
++	 * server's satisfiesRange so both sides agree; an unrecognised comparator is accepted rather
++	 * than failing an update closed on a range this client is simply too old to understand.
 +	 */
 +	private satisfiesRange(version: string, range: string): boolean {
 +		for (const comparator of range.trim().split(/\s+/).filter(Boolean)) {
@@ -962,20 +954,27 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		return true;
 +	}
 +
-+	private resolveAppUpdate(manifest: IWso2UpdateManifest): IWso2AvailableAppUpdate | undefined {
++	/** The versions this client would be on after taking everything in this answer. */
++	private projectedVersions(response: IWso2UpdateCheckResponse): Map<string, string> {
++		const projected = new Map<string, string>();
++		for (const component of response.components) {
++			projected.set(component.id, component.version);
++		}
++		return projected;
++	}
++
++	private resolveAppUpdate(response: IWso2UpdateCheckResponse): IWso2AvailableAppUpdate | undefined {
 +		// On macOS, when the stock update feed is configured the native Squirrel.Mac updater
 +		// (darwinUpdateService) owns core-app updates — don't also offer them here.
 +		if (process.platform === 'darwin' && this.productService.updateUrl) {
 +			return undefined;
 +		}
-+		const app = manifest.app;
++		const app = response.app;
 +		if (!app) {
 +			return undefined;
 +		}
++		// Forward-only for the app too: the server decided, but this client checks.
 +		if (compareVersions(app.version, this.appVersion()) <= 0) {
-+			return undefined;
-+		}
-+		if (app.rollout && !this.passesRolloutValue('app', app.version, app.rollout.percentage)) {
 +			return undefined;
 +		}
 +		return { version: app.version, installerUrl: app.installer.url, releaseNotesUrl: app.releaseNotesUrl };
@@ -990,21 +989,21 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +	}
 +
 +	private async doDownloadUpdates(componentIds?: readonly string[]): Promise<void> {
-+		const manifest = this.lastManifest;
-+		if (!manifest) {
++		const response = this.lastResponse;
++		if (!response) {
 +			return;
 +		}
 +
-+		// Resolve which components to download. Explicit ids act directly on the
-+		// manifest so a single component can be updated even when it isn't part of
-+		// the offered/recommended set; otherwise fall back to the offered set.
-+		let targetComponents: IWso2ManifestComponent[];
++		// Which of the server's offers to take. Explicit ids act directly on the answer so a single
++		// component can be updated from the Components view; otherwise take everything currently
++		// offered.
++		let targetComponents: IWso2ComponentOffer[];
 +		if (componentIds && componentIds.length) {
 +			const wanted = new Set(componentIds);
-+			targetComponents = manifest.components.filter(c => wanted.has(c.id));
++			targetComponents = response.components.filter(c => wanted.has(c.id));
 +		} else if (this._state.type === Wso2UpdateStateType.UpdatesAvailable) {
 +			const offered = new Set(this._state.updates.map(u => u.id));
-+			targetComponents = manifest.components.filter(c => offered.has(c.id));
++			targetComponents = response.components.filter(c => offered.has(c.id));
 +		} else {
 +			targetComponents = [];
 +		}
@@ -1043,7 +1042,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		}
 +	}
 +
-+	private async downloadExtension(component: IWso2ManifestComponent): Promise<string> {
++	private async downloadExtension(component: IWso2ComponentOffer): Promise<string> {
 +		const dir = path.join(this.stagingHome, component.id, component.version);
 +		await fs.promises.mkdir(dir, { recursive: true });
 +		const vsixPath = path.join(dir, `${component.id}-${component.version}.vsix`);
@@ -1057,7 +1056,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		return vsixPath;
 +	}
 +
-+	private async stageRuntime(component: IWso2ManifestComponent): Promise<void> {
++	private async stageRuntime(component: IWso2ComponentOffer): Promise<void> {
 +		this.logService.info(`[wso2Update] staging runtime ${component.id}@${component.version} from ${component.artifact.url}`);
 +		const stagingDir = path.join(this.stagingHome, component.id, component.version);
 +		await fs.promises.rm(stagingDir, { recursive: true, force: true });
@@ -1344,10 +1343,10 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +				}
 +			}
 +		}
-+		// Overlay available versions from the last manifest.
-+		if (this.lastManifest) {
-+			const projected = this.projectedVersions(this.lastManifest);
-+			for (const component of this.lastManifest.components) {
++		// Overlay what the server last offered.
++		if (this.lastResponse) {
++			const projected = this.projectedVersions(this.lastResponse);
++			for (const component of this.lastResponse.components) {
 +				const existing = statuses.get(component.id);
 +				const activeVersion = this.activeVersion(component.id, local);
 +				const pendingVersion = local?.components[component.id]?.pending?.version;
@@ -1356,7 +1355,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +				// check command agree.
 +				const availableVersion = ((!activeVersion || compareVersions(component.version, activeVersion) > 0)
 +					&& !(pendingVersion && compareVersions(pendingVersion, component.version) >= 0)
-+					&& this.requiresSatisfied(component, this.lastManifest, local, projected))
++					&& this.requiresSatisfied(component, local, projected))
 +					? component.version : undefined;
 +				statuses.set(component.id, {
 +					id: component.id,
@@ -1383,9 +1382,9 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		}
 +		// Re-derive rather than assuming Idle: the user may have updated a single component from the
 +		// Components picker while others were still on offer.
-+		const manifest = this.lastManifest;
-+		const updates = manifest ? this.resolveOfferedUpdates(manifest) : [];
-+		const appUpdate = manifest ? this.resolveAppUpdate(manifest) : undefined;
++		const response = this.lastResponse;
++		const updates = response ? this.resolveOfferedUpdates(response) : [];
++		const appUpdate = response ? this.resolveAppUpdate(response) : undefined;
 +		if (updates.length === 0 && !appUpdate) {
 +			this.setState({ type: Wso2UpdateStateType.Idle });
 +		} else {
@@ -1458,7 +1457,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +
 +	async downloadAppInstaller(): Promise<void> {
 +		const appUpdate = this._state.type === Wso2UpdateStateType.UpdatesAvailable ? this._state.appUpdate : undefined;
-+		const url = appUpdate?.installerUrl ?? (this.lastManifest?.app?.installer.url);
++		const url = appUpdate?.installerUrl ?? this.lastResponse?.app?.installer.url;
 +		if (!url) {
 +			return;
 +		}
@@ -1479,7 +1478,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +	}
 +
 +	private async doApplyAppUpdate(): Promise<void> {
-+		const app = this.lastManifest?.app;
++		const app = this.lastResponse?.app;
 +		if (!app) {
 +			return;
 +		}
@@ -1646,12 +1645,12 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		this.lifecycleMainService.quit();
 +	}
 +
-+	private persistCheckMetadata(manifest: IWso2UpdateManifest): void {
++	private persistCheckMetadata(response: IWso2UpdateCheckResponse): void {
 +		this.updateLocalManifest(local => {
 +			local.channel = this.channel;
 +			local.lastCheck = new Date().toISOString();
-+			if (typeof manifest.sequence === 'number') {
-+				local.lastManifestSequence = manifest.sequence;
++			if (typeof response.sequence === 'number') {
++				local.lastManifestSequence = response.sequence;
 +			}
 +		});
 +	}
@@ -1693,25 +1692,9 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		return this.productService.wiversion ?? this.productService.version;
 +	}
 +
-+	private passesRollout(component: IWso2ManifestComponent): boolean {
-+		if (!component.rollout || component.rollout.percentage >= 100) {
-+			return true;
-+		}
-+		return this.passesRolloutValue(component.id, component.version, component.rollout.percentage);
-+	}
-+
-+	private passesRolloutValue(id: string, version: string, percentage: number): boolean {
-+		if (percentage >= 100) {
-+			return true;
-+		}
-+		if (percentage <= 0) {
-+			return false;
-+		}
-+		const bucket = parseInt(createHash('sha1').update(`${this.deviceId()}:${id}:${version}`).digest('hex').slice(0, 8), 16) % 100;
-+		return bucket < percentage;
-+	}
-+
++	/** Cached device id; see deviceId(). Never transmitted — only its 0-99 bucket is. */
 +	private _deviceId: string | undefined;
++
 +	private deviceId(): string {
 +		if (this._deviceId) {
 +			return this._deviceId;
