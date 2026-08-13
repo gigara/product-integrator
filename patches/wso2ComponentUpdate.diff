@@ -209,7 +209,7 @@ Index: product-integrator/lib/vscode/src/vs/base/common/product.ts
 ===================================================================
 --- product-integrator.orig/lib/vscode/src/vs/base/common/product.ts
 +++ product-integrator/lib/vscode/src/vs/base/common/product.ts
-@@ -107,6 +107,14 @@ export interface IProductConfiguration {
+@@ -107,6 +107,21 @@ export interface IProductConfiguration {
  	readonly commit?: string;
  	readonly runtimeEnv?: IProductRuntimeEnvironmentMap | IProductRuntimeEnvironmentByPlatform;
  	readonly bundledComponents?: { readonly [id: string]: string };
@@ -221,6 +221,13 @@ Index: product-integrator/lib/vscode/src/vs/base/common/product.ts
 +	readonly wso2UpdateUrl?: string;
 +	/** Base64-encoded PEM public key used to verify the update manifest's cosign signature. */
 +	readonly wso2UpdatePublicKey?: string;
++	/**
++	 * Require every downloaded artifact to carry a valid cosign signature, rejecting one that
++	 * declares none. Off during the migration to a fully mirrored artifact set, because a
++	 * third-party source URL cannot be signed by us; turn it on once every artifact the manifest
++	 * can reference is mirrored, since only then does an absent signature mean something is wrong.
++	 */
++	readonly wso2UpdateRequireArtifactSignature?: boolean;
  
  	readonly nameShort: string;
  	readonly nameLong: string;
@@ -261,7 +268,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Updat
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Update.ts
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,195 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -298,9 +305,15 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Updat
 +	readonly url: string;
 +	readonly sha256: string;
 +	readonly sizeBytes?: number;
++	/**
++	 * Detached cosign signature over the artifact bytes, verified against the pinned
++	 * `wso2UpdatePublicKey`. Present only for artifacts mirrored to the WSO2 update bucket, which
++	 * is where CI can sign them; a third-party source URL has no signature of ours. `certUrl` is
++	 * only meaningful for keyless (Fulcio) signing, which we deliberately do not use.
++	 */
 +	readonly signature?: {
 +		readonly sigUrl: string;
-+		readonly certUrl: string;
++		readonly certUrl?: string;
 +	};
 +}
 +
@@ -455,7 +468,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/wso2ComponentUpdateService.ts
-@@ -0,0 +1,1101 @@
+@@ -0,0 +1,1145 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -491,8 +504,9 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +import { ILogService } from '../../log/common/log.js';
 +import { IProductService } from '../../product/common/productService.js';
 +import { asText, IRequestService } from '../../request/common/request.js';
-+import { decodePublicKey, verifyDetachedSignature } from '../node/wso2UpdateVerification.js';
++import { decodePublicKey, verifyDetachedSignature, verifyDetachedSignatureOfFile } from '../node/wso2UpdateVerification.js';
 +import {
++	IWso2Artifact,
 +	IWso2AvailableAppUpdate,
 +	IWso2AvailableUpdate,
 +	IWso2ComponentStatus,
@@ -957,7 +971,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		const dir = path.join(this.stagingHome, component.id, component.version);
 +		await fs.promises.mkdir(dir, { recursive: true });
 +		const vsixPath = path.join(dir, `${component.id}-${component.version}.vsix`);
-+		await this.downloadAndVerify(component.artifact.url, vsixPath, component.artifact.sha256);
++		await this.downloadAndVerify(component.artifact.url, vsixPath, component.artifact.sha256, component.artifact.signature);
 +		return vsixPath;
 +	}
 +
@@ -968,7 +982,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		await fs.promises.mkdir(stagingDir, { recursive: true });
 +
 +		const archivePath = path.join(stagingDir, `${component.id}-${component.version}.zip`);
-+		await this.downloadAndVerify(component.artifact.url, archivePath, component.artifact.sha256);
++		await this.downloadAndVerify(component.artifact.url, archivePath, component.artifact.sha256, component.artifact.signature);
 +		this.logService.info(`[wso2Update] verified ${component.id}@${component.version}; extracting`);
 +
 +		const extractDir = path.join(stagingDir, 'extracted');
@@ -1024,7 +1038,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		return extractDir;
 +	}
 +
-+	private async downloadAndVerify(url: string, destPath: string, expectedSha256: string): Promise<void> {
++	private async downloadAndVerify(url: string, destPath: string, expectedSha256: string, signature?: IWso2Artifact['signature']): Promise<void> {
 +		if (!this.isAllowedUrl(url)) {
 +			throw new Error(`Artifact host not allowed: ${url}`);
 +		}
@@ -1034,6 +1048,10 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		try {
 +			if (await this.sha256OfFile(destPath) === expectedSha256.toLowerCase()) {
 +				this.logService.info(`[wso2Update] reusing already-downloaded ${destPath} (sha256 match)`);
++				// Still verify provenance: a file left on disk by an earlier attempt has only been
++				// shown to match the expected hash, and skipping the check here would make the
++				// reuse path weaker than a fresh download.
++				await this.verifyArtifactSignature(destPath, url, signature);
 +				return;
 +			}
 +		} catch {
@@ -1042,6 +1060,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt++) {
 +			try {
 +				await this.downloadAttempt(url, destPath, expectedSha256);
++				await this.verifyArtifactSignature(destPath, url, signature);
 +				return;
 +			} catch (err) {
 +				const retryable = err instanceof DownloadError ? err.retryable : true;
@@ -1053,6 +1072,44 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +				await new Promise<void>(resolve => setTimeout(resolve, delay));
 +			}
 +		}
++	}
++
++	/**
++	 * Verifies the artifact's detached cosign signature against the pinned public key, which is what
++	 * lets the manifest itself be treated as untrusted metadata later (server-composed, per-client
++	 * responses): provenance then rests on the artifact, not on who described it.
++	 *
++	 * A declared-but-invalid signature is always fatal. A MISSING signature is fatal only when the
++	 * product sets wso2UpdateRequireArtifactSignature, because until every artifact is mirrored to
++	 * the WSO2 bucket some manifests legitimately reference third-party source URLs we cannot sign.
++	 * Failures here are not retryable — re-downloading identical bytes cannot fix provenance.
++	 */
++	private async verifyArtifactSignature(filePath: string, url: string, signature?: IWso2Artifact['signature']): Promise<void> {
++		const publicKey = decodePublicKey(this.productService.wso2UpdatePublicKey);
++		if (!publicKey) {
++			return; // no pinned key configured: sha256 + TLS + host allowlist only (dev/test builds)
++		}
++		const sigUrl = signature?.sigUrl;
++		if (!sigUrl) {
++			if (this.productService.wso2UpdateRequireArtifactSignature) {
++				throw new DownloadError(`No signature declared for ${url} and artifact signatures are required`, false);
++			}
++			this.logService.info(`[wso2Update] ${url} has no artifact signature; verified by sha256 only`);
++			return;
++		}
++		if (!this.isAllowedUrl(sigUrl)) {
++			throw new DownloadError(`Signature host not allowed: ${sigUrl}`, false);
++		}
++		const context = await this.requestService.request({ url: sigUrl, callSite: 'wso2Update.artifactSignature' }, CancellationToken.None);
++		if (context.res.statusCode !== 200) {
++			throw new DownloadError(`Missing artifact signature ${sigUrl} (HTTP ${context.res.statusCode})`, false);
++		}
++		const signatureBase64 = (await asText(context)) ?? '';
++		if (!await verifyDetachedSignatureOfFile(filePath, signatureBase64, publicKey)) {
++			await fs.promises.rm(filePath, { force: true });
++			throw new DownloadError(`Artifact signature verification failed for ${url}`, false);
++		}
++		this.logService.info(`[wso2Update] artifact signature verified for ${url}`);
 +	}
 +
 +	/**
@@ -1280,7 +1337,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		if (!app) {
 +			return;
 +		}
-+		const { url, sha256 } = app.installer;
++		const { url, sha256, signature } = app.installer;
 +		if (!this.isAllowedUrl(url)) {
 +			this.logService.warn(`[wso2Update] refusing non-allowlisted app installer URL: ${url}`);
 +			throw new Error(`App installer host not allowed: ${url}`);
@@ -1298,7 +1355,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		await fs.promises.mkdir(downloadsHome, { recursive: true });
 +		const msiPath = path.join(downloadsHome, `wso2-integrator-${app.version}-update.msi`);
 +		this.logService.info(`[wso2Update] downloading app update ${app.version} MSI`);
-+		await this.downloadAndVerify(url, msiPath, sha256);
++		await this.downloadAndVerify(url, msiPath, sha256, signature);
 +		this.logService.info(`[wso2Update] verified app update MSI at ${msiPath}; scheduling silent install on quit`);
 +
 +		// Apply the editor-only MSI on quit, then relaunch — deterministically. The earlier approach
@@ -2729,7 +2786,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2UpdateV
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2UpdateVerification.ts
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,98 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -2748,7 +2805,8 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2UpdateV
 + * under the License.
 + */
 +
-+import { verify } from 'crypto';
++import { createVerify, verify } from 'crypto';
++import { createReadStream } from 'fs';
 +
 +/**
 + * Verifies a detached cosign signature over `data` using a fixed public key.
@@ -2772,6 +2830,40 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2UpdateV
 +	for (const dsaEncoding of ['der', 'ieee-p1363'] as const) {
 +		try {
 +			if (verify('sha256', data, { key: publicKeyPem, dsaEncoding }, signature)) {
++				return true;
++			}
++		} catch {
++			// try the next encoding
++		}
++	}
++	return false;
++}
++
++/**
++ * Same verification as verifyDetachedSignature(), but streamed from a file so a component artifact
++ * (hundreds of MB) is never held in memory — this runs in the main process. Reads the file once per
++ * candidate signature encoding, which is cheap next to the download that produced it.
++ */
++export async function verifyDetachedSignatureOfFile(filePath: string, signatureBase64: string, publicKeyPem: string): Promise<boolean> {
++	let signature: Buffer;
++	try {
++		signature = Buffer.from(signatureBase64.trim(), 'base64');
++	} catch {
++		return false;
++	}
++	if (signature.length === 0 || !publicKeyPem) {
++		return false;
++	}
++	for (const dsaEncoding of ['der', 'ieee-p1363'] as const) {
++		try {
++			const verifier = createVerify('sha256');
++			await new Promise<void>((resolve, reject) => {
++				const stream = createReadStream(filePath);
++				stream.on('error', reject);
++				stream.on('data', chunk => verifier.update(chunk));
++				stream.on('end', () => resolve());
++			});
++			if (verifier.verify({ key: publicKeyPem, dsaEncoding }, signature)) {
 +				return true;
 +			}
 +		} catch {

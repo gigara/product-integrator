@@ -1689,6 +1689,36 @@ jobs:
       # Artifacts go up BEFORE the manifest so a client can never fetch a manifest that
       # references not-yet-uploaded artifacts. Same key → same bytes across the platform
       # matrix (extensions are platform-independent), so concurrent overwrites are benign.
+      # Every mirrored artifact is cosigned so the CLIENT can verify provenance per artifact,
+      # independently of who described it. That is what allows the manifest to become
+      # server-composed (per-client / entitlement-driven) later without ever putting the signing
+      # key on the update server: trust rests on the artifact, not on the metadata around it.
+      # The client only enforces this when the manifest declares a signature, so a build without
+      # mirroring (no CDN configured) is unaffected.
+      - name: Sign mirrored artifacts
+        if: ${{ env.PUBLISH == 'true' }}
+        run: |
+          if [ ! -d artifacts-mirror ]; then
+            echo "No mirrored artifacts to sign."
+            exit 0
+          fi
+          # Public key as a file, matching the manifest verify step: cosign's env:// keyref is used
+          # for the private key, and the proven pattern here for verification is a key file.
+          printf '%s' "$COSIGN_PUBLIC_KEY" > cosign.pub
+          # -print0/-d '' so a path containing spaces or newlines cannot split into two arguments.
+          find artifacts-mirror -type f ! -name '*.sig' -print0 | while IFS= read -r -d '' file; do
+            cosign sign-blob --key env://COSIGN_PRIVATE_KEY "${file}" --output-signature "${file}.sig" --yes
+            # Verify immediately: a signature that cannot be checked here would ship as one the
+            # client rejects, turning a signing misconfiguration into a failed update for users.
+            cosign verify-blob --key cosign.pub --signature "${file}.sig" "${file}"
+            echo "signed ${file}"
+          done
+          rm -f cosign.pub
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
+
       - name: Upload mirrored artifacts to update bucket
         if: ${{ env.PUBLISH == 'true' }}
         run: |

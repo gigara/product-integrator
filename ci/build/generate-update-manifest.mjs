@@ -307,6 +307,12 @@ async function main() {
 			artifact.sha256 = sha256;
 			artifact.sizeBytes = sizeBytes;
 		}
+		// Only a MIRRORED artifact can carry a signature of ours: the CI job cosigns everything under
+		// the mirror dir and uploads `<file>.sig` next to it. A third-party source URL has no such
+		// file, so promising one would make the client reject an artifact it can never verify.
+		if (artifactsBase) {
+			artifact.signature = { sigUrl: `${artifactsBase}/${relPath}.sig` };
+		}
 
 		const requires = component.requires
 			? Object.fromEntries(Object.entries(component.requires).map(([k, v]) => [k, substitute(v, substitutionVars)]))
@@ -338,6 +344,9 @@ async function main() {
 			const { sha256, sizeBytes } = await hashAndSize(sourceUrl, mirrorPath);
 			installer.sha256 = sha256;
 			installer.sizeBytes = sizeBytes;
+		}
+		if (artifactsBase) {
+			installer.signature = { sigUrl: `${artifactsBase}/${relPath}.sig` };
 		}
 		app = { version: appVersion, minAutoUpdateFromVersion: args['app-min-version'] || undefined, installer };
 		// The commit this build was produced from (product-integrator root sha). The update

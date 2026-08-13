@@ -43,6 +43,11 @@ WSO2_UPDATE_URL=${WSO2_UPDATE_URL:-""}
 # to enforce signature verification.
 WSO2_UPDATE_PUBLIC_KEY=${WSO2_UPDATE_PUBLIC_KEY:-""}
 
+# Reject an artifact that declares no cosign signature. Left false until every artifact the
+# manifest can reference is mirrored to the WSO2 bucket (only mirrored artifacts can be signed by
+# us), because a third-party source URL would otherwise fail verification it can never pass.
+WSO2_UPDATE_REQUIRE_ARTIFACT_SIGNATURE=${WSO2_UPDATE_REQUIRE_ARTIFACT_SIGNATURE:-"false"}
+
 # Stock VS Code update feed (Squirrel.Mac via darwinUpdateService). Set STOCK_UPDATE_URL
 # ONLY for macOS builds — enabling it also activates the win32/linux stock update paths,
 # which do not fit our MSI/DEB packaging. Empty → stock update service stays disabled.
@@ -206,6 +211,7 @@ fi)
     ],
     "wso2UpdateUrl": "${WSO2_UPDATE_URL}",
     "wso2UpdatePublicKey": "${WSO2_UPDATE_PUBLIC_KEY}",
+    "wso2UpdateRequireArtifactSignature": ${WSO2_UPDATE_REQUIRE_ARTIFACT_SIGNATURE},
     "updateUrl": "${STOCK_UPDATE_URL}",
 $(if [ -n "${DARWIN_UNIVERSAL_ASSET_ID}" ]; then
 cat <<DARWIN_UNIVERSAL_ASSET_ID_ENTRY
