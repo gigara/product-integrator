@@ -234,3 +234,100 @@ function testSquirrelPicksTheClientsLineAndOnlyWhereAPayloadExists() {
     // win32 publishes an installer but never a Squirrel payload.
     test:assertTrue(decideSquirrel(src, "win32-x64", "5.1.2") is ());
 }
+
+// --- per-line component entries (one document, two release lines) ---------------------------
+
+// wso2.ballerina ships twice: 5.12.x for the 5.1 line, 5.13.x for 5.2. A third component depends on
+// it, so this also pins down WHICH version a dependency is resolved against.
+function multiLineSource() returns SourceManifest => {
+    schemaVersion: 2,
+    channel: "stable",
+    sequence: 20,
+    publishedAt: "2026-08-13T00:00:00Z",
+    apps: [],
+    components: [
+        {
+            id: "wso2.ballerina",
+            kind: "extension",
+            'version: "5.12.4",
+            requires: {"app": ">=5.1.0 <5.2.0"},
+            targets: {"darwin-arm64": {url: "https://cdn/bal-5.12.4.vsix", sha256: "a", sizeBytes: 1}}
+        },
+        {
+            id: "wso2.ballerina",
+            kind: "extension",
+            'version: "5.13.1",
+            requires: {"app": ">=5.2.0"},
+            targets: {"darwin-arm64": {url: "https://cdn/bal-5.13.1.vsix", sha256: "b", sizeBytes: 2}}
+        },
+        {
+            id: "companion",
+            kind: "extension",
+            'version: "1.0.0",
+            requires: {"wso2.ballerina": ">=5.13.0"},
+            targets: {"darwin-arm64": {url: "https://cdn/companion.vsix", sha256: "c", sizeBytes: 3}}
+        }
+    ]
+};
+
+function offeredVersion(UpdateCheckResponse? r, string id) returns string {
+    if r is () {
+        return "none";
+    }
+    foreach ComponentOffer c in r.components {
+        if c.id == id {
+            return c.'version;
+        }
+    }
+    return "none";
+}
+
+function offerCount(UpdateCheckResponse? r, string id) returns int {
+    if r is () {
+        return 0;
+    }
+    int count = 0;
+    foreach ComponentOffer c in r.components {
+        if c.id == id {
+            count += 1;
+        }
+    }
+    return count;
+}
+
+@test:Config {}
+function testEachLineGetsItsOwnComponentVersion() {
+    UpdateCheckResponse? five1 = decideUpdates(multiLineSource(), {
+        platform: "darwin", arch: "arm64", appVersion: "5.1.4", components: {"wso2.ballerina": "5.12.0"}
+    });
+    test:assertEquals(offeredVersion(five1, "wso2.ballerina"), "5.12.4");
+
+    UpdateCheckResponse? five2 = decideUpdates(multiLineSource(), {
+        platform: "darwin", arch: "arm64", appVersion: "5.2.1", components: {"wso2.ballerina": "5.12.0"}
+    });
+    test:assertEquals(offeredVersion(five2, "wso2.ballerina"), "5.13.1");
+}
+
+@test:Config {}
+function testAComponentIsNeverOfferedTwice() {
+    UpdateCheckResponse? r = decideUpdates(multiLineSource(), {
+        platform: "darwin", arch: "arm64", appVersion: "5.2.1", components: {}
+    });
+    test:assertEquals(offerCount(r, "wso2.ballerina"), 1, "per-line entries must collapse to one offer per component id");
+}
+
+@test:Config {}
+function testDependenciesResolveAgainstTheClientsOwnLine() {
+    // `companion` needs wso2.ballerina >= 5.13.0. A 5.2 client projects 5.13.1 and qualifies.
+    UpdateCheckResponse? five2 = decideUpdates(multiLineSource(), {
+        platform: "darwin", arch: "arm64", appVersion: "5.2.1", components: {}
+    });
+    test:assertEquals(offeredVersion(five2, "companion"), "1.0.0");
+
+    // A 5.1 client projects 5.12.4 and must NOT qualify — before the fix it was evaluated against
+    // 5.13.1, a version that client can never be given.
+    UpdateCheckResponse? five1 = decideUpdates(multiLineSource(), {
+        platform: "darwin", arch: "arm64", appVersion: "5.1.4", components: {}
+    });
+    test:assertEquals(offeredVersion(five1, "companion"), "none");
+}

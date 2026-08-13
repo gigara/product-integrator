@@ -151,15 +151,55 @@ isolated function decideApp(SourceManifest src, UpdateCheckRequest req, string t
     return offer;
 }
 
-// Every component's version in this document, used to evaluate one component's `requires` against
-// the state the client would reach by taking this whole set — the same "projected" view the client
-// computes for itself.
-isolated function projectedVersions(SourceManifest src, string target) returns map<string> {
-    map<string> projected = {};
+// Whether an entry belongs to THIS client's release line.
+//
+// A document may carry several entries for one component id — that is how one file serves 5.1.x and
+// 5.2.x at once — and `requires.app` is what tells them apart. It is evaluated on its own here,
+// before any projection, because it depends only on the version the client is running and so cannot
+// be circular, whereas component-to-component requires can be.
+isolated function onClientsLine(SourceComponent component, UpdateCheckRequest req) returns boolean {
+    map<string>? requires = component?.requires;
+    if requires is () {
+        return true;
+    }
+    string? appRange = requires["app"];
+    if appRange is () {
+        return true;
+    }
+    return satisfiesRange(req.appVersion, appRange);
+}
+
+// The single entry per component id that applies to this client: on its line, published for its
+// target, and the newest where ranges overlap.
+//
+// Collapsing to one entry per id BEFORE deciding is what stops a document with per-line entries
+// offering the same component twice, and stops the projection below resolving a dependency against
+// another line's version — which would silently evaluate `requires` against a version this client
+// can never be given.
+isolated function applicableComponents(SourceManifest src, UpdateCheckRequest req, string target)
+        returns map<SourceComponent> {
+    map<SourceComponent> best = {};
     foreach SourceComponent component in src.components {
-        if component.targets.hasKey(target) {
-            projected[component.id] = component.'version;
+        if !component.targets.hasKey(target) {
+            continue;
         }
+        if !onClientsLine(component, req) {
+            continue;
+        }
+        SourceComponent? chosen = best[component.id];
+        if chosen is () || compareVersions(component.'version, chosen.'version) > 0 {
+            best[component.id] = component;
+        }
+    }
+    return best;
+}
+
+// The versions this client would be on after taking everything applicable to it — the same
+// "projected" view the client computes for itself.
+isolated function projectedVersions(map<SourceComponent> applicable) returns map<string> {
+    map<string> projected = {};
+    foreach SourceComponent component in applicable {
+        projected[component.id] = component.'version;
     }
     return projected;
 }
@@ -196,14 +236,12 @@ isolated function requiresSatisfied(SourceComponent component, UpdateCheckReques
 isolated function decideUpdates(SourceManifest src, UpdateCheckRequest req) returns UpdateCheckResponse? {
     string target = string `${req.platform}-${req.arch}`;
     map<string> installed = req?.components ?: {};
-    map<string> projected = projectedVersions(src, target);
+    map<SourceComponent> applicable = applicableComponents(src, req, target);
+    map<string> projected = projectedVersions(applicable);
 
     ComponentOffer[] offers = [];
-    foreach SourceComponent component in src.components {
-        TargetArtifact? artifact = component.targets[target];
-        if artifact is () {
-            continue; // not published for this platform
-        }
+    foreach SourceComponent component in applicable {
+        TargetArtifact artifact = <TargetArtifact>component.targets[target];
         string? have = installed[component.id];
         // A component the client did not mention is one it does not have — offer it. Anything it
         // reported at this version or newer is skipped; the client enforces the same rule again.
