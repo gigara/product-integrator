@@ -302,8 +302,20 @@ async function main() {
 		return entry;
 	};
 
-	const components = [];
+	// A component may ship a different version per release line. `variants` expands one config entry
+	// into several document entries that differ in version and in `requires.app`, which is what the
+	// server uses to tell them apart — so 5.1.x clients can keep getting 5.12.x while 5.2.x moves on.
+	// The base entry is the current line; each variant inherits everything it does not override.
+	const declared = [];
 	for (const component of config.components) {
+		declared.push(component);
+		for (const variant of component.variants ?? []) {
+			declared.push({ ...component, ...variant, variants: undefined, isVariant: true });
+		}
+	}
+
+	const components = [];
+	for (const component of declared) {
 		// Components that only exist as a repo-local build artifact (no public source URL) can only
 		// be published when mirroring is on. Skip LOUDLY rather than failing the whole document.
 		if (component.sourceFile && !artifactsBase) {
@@ -314,6 +326,12 @@ async function main() {
 		// Fail rather than skip: a declared component that cannot be rendered would otherwise
 		// produce a signed-but-incomplete document, which the server would serve as authoritative.
 		if (!version) {
+			// A VARIANT with no version is a retired line: skip it loudly. Retiring a line should be
+			// deleting its version, not editing every component that mentions it.
+			if (component.isVariant) {
+				process.stderr.write(`SKIPPING variant of ${component.id}: no version (key '${component.versionKey}'); that line will not be offered\n`);
+				continue;
+			}
 			throw new Error(`Cannot render ${component.id}: no version (key '${component.versionKey ?? component.versionFromPackageJson}')`);
 		}
 		const requires = component.requires
