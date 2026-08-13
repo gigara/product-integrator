@@ -67,6 +67,10 @@ service / on updateListener {
     // always returned (200) so this stays compatible with static hosting.
     resource function get api/v1/updates/[string channel]/[string platform]/[string arch]/[string fileName](
             http:Request request, string? appVersion) returns http:Response {
+        http:Response? denied = clientAuthGuard(request);
+        if denied is http:Response {
+            return denied;
+        }
         string? ifNoneMatch = ();
         string|http:HeaderNotFoundError header = request.getHeader("If-None-Match");
         if header is string {
@@ -101,7 +105,11 @@ service / on updateListener {
     // feed artifact. Every failure path deliberately degrades to 204 ("no update") —
     // a broken/missing manifest must never surface an error on each mac client's check.
     resource function get api/update/[string assetId]/[string quality]/[string clientCommit](
-            string? wiversion) returns http:Response {
+            http:Request request, string? wiversion) returns http:Response {
+        http:Response? denied = clientAuthGuard(request);
+        if denied is http:Response {
+            return denied;
+        }
         string? arch = assetId == "darwin" ? "x64" : assetId == "darwin-arm64" ? "arm64" : ();
         if arch is () {
             return jsonResponse(404, {'error: "unsupported asset"});
@@ -265,6 +273,34 @@ function buildFileResponse(string channel, string platform, string arch, string 
 // Admin authorization guard. Returns a denial response (404 when the admin API is disabled,
 // 401 on a bad/absent token) or () when the caller is authorized. Tokens are compared via
 // their SHA-256 digests so the comparison leaks no prefix-timing information.
+// Guards the CLIENT-facing read endpoints. Returns () when the request may proceed: either no
+// clientTokens are configured (open, as today) or the presented bearer matches one of them.
+//
+// Compared over SHA-256 digests, like authGuard, so the check does not leak which prefix matched
+// through timing. Digests of every candidate are computed regardless of an early match for the
+// same reason.
+function clientAuthGuard(http:Request request) returns http:Response? {
+    if clientTokens.length() == 0 {
+        return ();
+    }
+    string|http:HeaderNotFoundError auth = request.getHeader("Authorization");
+    if auth !is string {
+        return jsonResponse(401, {'error: "unauthorized"});
+    }
+    byte[] presented = crypto:hashSha256(auth.toBytes());
+    boolean matched = false;
+    foreach string token in clientTokens {
+        byte[] expected = crypto:hashSha256(string `Bearer ${token}`.toBytes());
+        if presented == expected {
+            matched = true;
+        }
+    }
+    if !matched {
+        return jsonResponse(401, {'error: "unauthorized"});
+    }
+    return ();
+}
+
 function authGuard(http:Request request) returns http:Response? {
     if adminToken == "" {
         return jsonResponse(404, {'error: "not found"});

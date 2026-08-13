@@ -61,6 +61,15 @@ configurable string adminToken = "";
 // alternative would strand them with no updates at all, permanently.
 configurable boolean restrictAppUpdatesToMinorLine = true;
 
+// Tokens accepted on the CLIENT-facing read endpoints (manifest + Squirrel feed). Empty (the
+// default) leaves those endpoints open, which is the behaviour every existing client depends on.
+// Populate it to require `Authorization: Bearer <token>`; unauthenticated checks then get 401.
+//
+// A flat token list is deliberately the first step: it gates ACCESS without yet modelling
+// entitlement. Per-client composition (which components a given subject may see) needs a real
+// subject -> entitlement mapping, which belongs with the product decision, not here.
+configurable string[] clientTokens = [];
+
 // Cache-Control max-age (seconds) sent with manifest/signature responses.
 // Clients additionally revalidate with the ETag, so this can be modest.
 configurable int cacheMaxAge = 300;

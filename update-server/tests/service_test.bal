@@ -14,6 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+import ballerina/crypto;
 import ballerina/file;
 import ballerina/http;
 import ballerina/io;
@@ -291,4 +292,29 @@ function testSquirrelFeedWithholdsCrossMinorUpdate() returns error? {
     // Same-commit clients are still current regardless of the line.
     http:Response current = check testClient->get("/api/update/darwin-arm64/beta/newsha?wiversion=5.2.0");
     test:assertEquals(current.statusCode, 204);
+}
+
+// --- client-token gate on the read endpoints -------------------------------------
+
+@test:Config {}
+function testReadEndpointsOpenWhenNoClientTokensConfigured() returns error? {
+    // The suite runs with clientTokens = [] (the default), which must stay open — every client
+    // built before this feature sends no Authorization header at all.
+    http:Response manifest = check testClient->get("/api/v1/updates/stable/win32/x64/manifest.json");
+    test:assertTrue(manifest.statusCode == 200 || manifest.statusCode == 404,
+        string `expected an unauthenticated read to be served, got ${manifest.statusCode}`);
+    http:Response squirrel = check testClient->get("/api/update/darwin-arm64/stable/somesha");
+    test:assertTrue(squirrel.statusCode != 401, "squirrel feed must not require auth when unconfigured");
+}
+
+@test:Config {}
+function testClientAuthGuardLogic() {
+    // clientTokens is a module-level configurable, so exercise the comparison the guard performs
+    // rather than re-deploying the listener: a digest match on "Bearer <token>" and nothing else.
+    string token = "s3cr3t-client-token";
+    byte[] expected = crypto:hashSha256(string `Bearer ${token}`.toBytes());
+    test:assertEquals(crypto:hashSha256(string `Bearer ${token}`.toBytes()), expected);
+    test:assertNotEquals(crypto:hashSha256(string `Bearer ${token} `.toBytes()), expected);
+    test:assertNotEquals(crypto:hashSha256(token.toBytes()), expected);
+    test:assertNotEquals(crypto:hashSha256("Bearer wrong".toBytes()), expected);
 }
