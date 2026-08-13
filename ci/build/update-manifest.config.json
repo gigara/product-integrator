@@ -1,5 +1,10 @@
 {
-  "_comment": "Declares the components published to the WSO2 Integrator update server. generate-update-manifest.mjs renders a signed manifest per (channel, platform, arch) from this + component-versions.properties. `url` is the SOURCE the CI publish job fetches from (vendor releases / open-vsx); with --artifacts-base every artifact is mirrored to the update bucket and the manifest points clients at the CDN, so clients never touch these hosts. `sourceFile` (repo-relative, for locally built artifacts like the WI extension VSIX) replaces `url` and requires mirroring. `sources` maps alternate source flavors (e.g. github) selected per component via --source-flavors, so the published artifact comes from the SAME source the build bundled (ballerina_extension_source / mi_extension_source workflow inputs). Version comes from `versionKey` (component-versions.properties) or `versionFromPackageJson`. URL placeholders: {version}, {ballerinaPlatform}, {jrePlatform}. Requires placeholders: {appVersion}, {ballerinaVersion}, {icpVersion}, {jreVersion}. Client-facing hosts must be on the allowlist (wso2ComponentUpdateService.ts ALLOWED_HOST_SUFFIXES).",
+  "targets": [
+    "darwin-arm64",
+    "darwin-x64",
+    "win32-x64",
+    "linux-x64"
+  ],
   "platformTokens": {
     "ballerina": {
       "darwin-x64": "macos",
@@ -14,13 +19,28 @@
       "win32-x64": "win-64"
     }
   },
+  "app": {
+    "installers": {
+      "darwin-arm64": "wso2-integrator-{version}-arm64.dmg",
+      "darwin-x64": "wso2-integrator-{version}-x64.dmg",
+      "win32-x64": "wso2-integrator-{version}-update.msi",
+      "linux-x64": "wso2-integrator_{version}_amd64-update.deb"
+    },
+    "squirrel": {
+      "darwin-arm64": "wso2-integrator-{version}-arm64-mac.zip",
+      "darwin-x64": "wso2-integrator-{version}-x64-mac.zip"
+    }
+  },
   "components": [
     {
       "id": "ballerina-runtime",
       "kind": "runtime",
       "versionKey": "ballerina.version",
       "url": "https://github.com/ballerina-platform/ballerina-distribution/releases/download/v{version}/ballerina-{versionBase}-swan-lake-{ballerinaPlatform}.zip",
-      "requires": { "app": ">={appVersion}", "jre": ">={jreVersion}" },
+      "requires": {
+        "app": ">={appVersion}",
+        "jre": ">={jreVersion}"
+      },
       "recommended": true
     },
     {
@@ -35,7 +55,9 @@
       "kind": "runtime",
       "versionKey": "icp.version",
       "url": "https://github.com/wso2/integration-control-plane/releases/download/v{version}/wso2-integration-control-plane-{version}.zip",
-      "requires": { "app": ">={appVersion}" },
+      "requires": {
+        "app": ">={appVersion}"
+      },
       "recommended": true
     },
     {
@@ -46,7 +68,10 @@
       "sources": {
         "github": "https://github.com/wso2/ballerina-vscode/releases/download/v{version}/ballerina-{version}.vsix"
       },
-      "requires": { "app": ">={appVersion}", "ballerina-runtime": ">={ballerinaVersion}" },
+      "requires": {
+        "app": ">={appVersion}",
+        "ballerina-runtime": ">={ballerinaVersion}"
+      },
       "recommended": true
     },
     {
@@ -57,7 +82,10 @@
       "sources": {
         "github": "https://github.com/wso2/mi-vscode/releases/download/v{version}/micro-integrator-{version}.vsix"
       },
-      "requires": { "app": ">={appVersion}", "icp": ">={icpVersion}" },
+      "requires": {
+        "app": ">={appVersion}",
+        "icp": ">={icpVersion}"
+      },
       "recommended": true
     },
     {
@@ -65,7 +93,9 @@
       "kind": "extension",
       "versionKey": "wso2.streaming-integrator.extension.version",
       "url": "https://open-vsx.org/api/wso2/streaming-integrator/{version}/file/wso2.streaming-integrator-{version}.vsix",
-      "requires": { "app": ">={appVersion}" },
+      "requires": {
+        "app": ">={appVersion}"
+      },
       "recommended": true
     },
     {
@@ -73,21 +103,27 @@
       "kind": "extension",
       "versionKey": "wso2.hurl-client.extension.version",
       "url": "https://open-vsx.org/api/wso2/hurl-client/{version}/file/wso2.hurl-client-{version}.vsix",
-      "requires": { "app": ">={appVersion}" }
+      "requires": {
+        "app": ">={appVersion}"
+      }
     },
     {
       "id": "wso2.mcp-server-inspector",
       "kind": "extension",
       "versionKey": "wso2.mcp-server-inspector.extension.version",
       "url": "https://open-vsx.org/api/wso2/mcp-server-inspector/{version}/file/wso2.mcp-server-inspector-{version}.vsix",
-      "requires": { "app": ">={appVersion}" }
+      "requires": {
+        "app": ">={appVersion}"
+      }
     },
     {
       "id": "wso2.wso2-integrator",
       "kind": "extension",
       "versionFromPackageJson": "wi/wi-extension/package.json",
       "sourceFile": "wi/wi-extension/wso2-integrator-{version}.vsix",
-      "requires": { "app": ">={appVersion}" },
+      "requires": {
+        "app": ">={appVersion}"
+      },
       "recommended": true
     }
   ]

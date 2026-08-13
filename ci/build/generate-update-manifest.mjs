@@ -189,31 +189,29 @@ function writeStatement(mirrorPath, { id, version, sha256, sizeBytes, requires }
 async function main() {
 	const args = parseArgs(process.argv.slice(2));
 	const channel = args.channel || 'stable';
-	const platform = args.platform;
-	const arch = args.arch;
 	const sequence = Number(args.sequence ?? 0);
 	const noDownload = !!args['no-download'];
-
-	if (!platform || !arch) {
-		throw new Error('Missing required --platform and/or --arch');
-	}
 
 	const configPath = args.config || path.join(SCRIPT_DIR, 'update-manifest.config.json');
 	const versionsPath = args.versions || path.join(SCRIPT_DIR, 'component-versions.properties');
 	const config = JSON.parse(readFileSync(configPath, 'utf8'));
 	const versions = readVersions(versionsPath);
 
-	// Mirror mode: artifacts are re-hosted on the update bucket/CDN and the manifest points there.
+	const targets = config.targets;
+	if (!Array.isArray(targets) || targets.length === 0) {
+		throw new Error('config.targets must list the platform-arch pairs to publish');
+	}
+
+	// Mirror mode: artifacts are re-hosted on the update bucket/CDN and the source points there.
 	const artifactsBase = typeof args['artifacts-base'] === 'string' ? args['artifacts-base'].replace(/\/+$/, '') : '';
 	const mirrorDir = typeof args['mirror-dir'] === 'string' ? args['mirror-dir'] : '';
-	if (artifactsBase && !mirrorDir && !args['no-download']) {
-		// A CDN URL in the manifest with no mirrored bytes to upload would 404 for every client.
+	if (artifactsBase && !mirrorDir && !noDownload) {
+		// A CDN URL with no mirrored bytes to upload would 404 for every client.
 		throw new Error('--artifacts-base requires --mirror-dir (or --no-download for structure checks)');
 	}
 
 	// Per-component source flavor overrides ("id=flavor,..."): mirror from the SAME source the
-	// build bundled (e.g. wso2.ballerina=github when the build used ballerina_extension_source=
-	// github), so the published artifact can never diverge from the packed one.
+	// build bundled, so the published artifact can never diverge from the packed one.
 	const sourceFlavors = {};
 	if (typeof args['source-flavors'] === 'string' && args['source-flavors']) {
 		for (const pair of args['source-flavors'].split(',')) {
@@ -225,16 +223,17 @@ async function main() {
 	}
 
 	const appVersion = args['app-version'] || versions['integrator.version'];
-	const platformArch = `${platform}-${arch}`;
-
-	const substitutionVars = {
+	const commonVars = {
 		appVersion,
 		ballerinaVersion: versions['ballerina.version'],
 		icpVersion: versions['icp.version'],
-		jreVersion: versions['ballerina.jre.version'],
-		ballerinaPlatform: config.platformTokens?.ballerina?.[platformArch],
-		jrePlatform: config.platformTokens?.jre?.[platformArch]
+		jreVersion: versions['ballerina.jre.version']
 	};
+	const varsFor = target => ({
+		...commonVars,
+		ballerinaPlatform: config.platformTokens?.ballerina?.[target],
+		jrePlatform: config.platformTokens?.jre?.[target]
+	});
 
 	// A component's version comes from component-versions.properties (versionKey) or, for
 	// components built in this repo (e.g. the WI extension), from their own package.json.
@@ -248,173 +247,160 @@ async function main() {
 		return undefined;
 	};
 
-	const components = [];
-	for (const component of config.components) {
-		// Components that only exist as a repo-local build artifact (no public source URL) can
-		// only be published when mirroring is on. Without a CDN configured, skip them LOUDLY
-		// rather than failing the whole manifest — the rest of the set still publishes.
-		if (component.sourceFile && !artifactsBase) {
-			process.stderr.write(`SKIPPING ${component.id}: needs --artifacts-base (no public source URL); it will not be offered as an update\n`);
-			continue;
+	// Download, hash, mirror and describe each DISTINCT artifact exactly once. Platform-independent
+	// artifacts (a VSIX) resolve to the same URL for every target, and re-fetching them per target
+	// would multiply a release's CI time and bandwidth for identical bytes.
+	const resolved = new Map();
+	const resolveArtifact = async ({ relPath, sourceUrl, sourceFile, statement }) => {
+		const existing = resolved.get(relPath);
+		if (existing) {
+			return existing;
 		}
-		const version = resolveVersion(component);
-		// Some upstreams tag a pre-release with a suffix but name the assets inside that release
-		// after the base version — Ballerina's v2201.13.6-alpha2 ships
-		// `ballerina-2201.13.6-swan-lake-linux.zip`. `{versionBase}` lets a template keep the full
-		// version in the tag and drop the suffix in the filename. Only use it where the upstream is
-		// known to name assets that way; assuming it everywhere would break the ones that don't.
-		const versionBase = typeof version === 'string' ? version.split('-')[0] : version;
-		// Fail rather than skip: a declared component that can't be rendered would otherwise
-		// produce a signed-but-incomplete manifest (and a recommendedSet referencing it), which
-		// the client would treat as authoritative. A missing version / unresolved URL is a
-		// release-blocking configuration error.
-		if (!version) {
-			throw new Error(`Cannot render ${component.id}: no version (key '${component.versionKey ?? component.versionFromPackageJson}')`);
-		}
-
-		// Source: a public URL to fetch from, or a repo-local file (locally built artifacts).
-		let sourceUrl;
-		let sourceFile;
-		if (component.sourceFile) {
-			sourceFile = path.join(REPO_ROOT, substitute(component.sourceFile, { ...substitutionVars, version, versionBase }));
-		} else {
-			// 'marketplace' (or no flavor) is the default `url`; other flavors must be declared
-			// in the component's `sources` map — fail loudly rather than silently publishing
-			// from a different source than the build bundled.
-			const flavor = sourceFlavors[component.id];
-			let urlTemplate = component.url;
-			if (flavor && flavor !== 'marketplace') {
-				urlTemplate = component.sources?.[flavor];
-				if (!urlTemplate) {
-					throw new Error(`Cannot render ${component.id}: no source URL for flavor '${flavor}'`);
-				}
-			}
-			sourceUrl = substitute(urlTemplate, { ...substitutionVars, version, versionBase });
-			if (sourceUrl.includes('{')) {
-				throw new Error(`Cannot render ${component.id}: unresolved URL placeholder in '${sourceUrl}'`);
-			}
-		}
-
-		// Decode BEFORE basename: an encoded separator (..%2F) would otherwise survive
-		// basename and decode into a traversal that escapes the mirror dir.
-		const fileName = safeSegment(sourceFile
-			? path.basename(sourceFile)
-			: path.posix.basename(decodeURIComponent(new URL(sourceUrl).pathname)), 'file name');
-		const relPath = `components/${safeSegment(component.id, 'component id')}/${safeSegment(version, 'version')}/${fileName}`;
-
-const requires = component.requires
-			? Object.fromEntries(Object.entries(component.requires).map(([k, v]) => [k, substitute(v, substitutionVars)]))
-			: undefined;
-
-		const artifact = {};
-		if (artifactsBase) {
-			artifact.url = `${artifactsBase}/${relPath}`;
-		} else if (sourceUrl) {
-			artifact.url = sourceUrl;
-		} else {
-			throw new Error(`Cannot render ${component.id}: sourceFile components require --artifacts-base (no public source URL)`);
+		const entry = { url: artifactsBase ? `${artifactsBase}/${relPath}` : sourceUrl };
+		if (!entry.url) {
+			throw new Error(`Cannot render ${statement.id}: no public source URL; --artifacts-base is required`);
 		}
 		if (noDownload) {
-			artifact.sha256 = 'PLACEHOLDER_NO_DOWNLOAD';
-			artifact.sizeBytes = 0;
+			entry.sha256 = 'PLACEHOLDER_NO_DOWNLOAD';
+			entry.sizeBytes = 0;
 		} else {
 			const mirrorPath = artifactsBase ? path.join(mirrorDir, relPath) : undefined;
 			const { sha256, sizeBytes } = sourceFile
 				? await hashLocalFile(sourceFile, mirrorPath)
 				: await hashAndSize(sourceUrl, mirrorPath);
-			artifact.sha256 = sha256;
-			artifact.sizeBytes = sizeBytes;
+			entry.sha256 = sha256;
+			entry.sizeBytes = sizeBytes;
 		}
-		// Only a MIRRORED artifact can carry a signature of ours: the CI job cosigns everything under
-		// the mirror dir and uploads `<file>.sig` next to it. A third-party source URL has no such
-		// file, so promising one would make the client reject an artifact it can never verify.
+		// Only a MIRRORED artifact can carry a statement of ours: CI cosigns everything under the
+		// mirror dir. A third-party source URL has none, so promising one would make the client
+		// reject an artifact it could never verify.
 		if (artifactsBase) {
-			artifact.signature = {
+			entry.signature = {
 				statementUrl: `${artifactsBase}/${relPath}.statement.json`,
 				sigUrl: `${artifactsBase}/${relPath}.statement.json.sig`
 			};
 			if (!noDownload) {
 				writeStatement(path.join(mirrorDir, relPath), {
-					id: component.id,
-					version,
-					sha256: artifact.sha256,
-					sizeBytes: artifact.sizeBytes,
-					requires
+					...statement,
+					sha256: entry.sha256,
+					sizeBytes: entry.sizeBytes
 				});
 			}
 		}
+		resolved.set(relPath, entry);
+		return entry;
+	};
 
-		
+	const components = [];
+	for (const component of config.components) {
+		// Components that only exist as a repo-local build artifact (no public source URL) can only
+		// be published when mirroring is on. Skip LOUDLY rather than failing the whole document.
+		if (component.sourceFile && !artifactsBase) {
+			process.stderr.write(`SKIPPING ${component.id}: needs --artifacts-base (no public source URL); it will not be offered as an update\n`);
+			continue;
+		}
+		const version = resolveVersion(component);
+		// Fail rather than skip: a declared component that cannot be rendered would otherwise
+		// produce a signed-but-incomplete document, which the server would serve as authoritative.
+		if (!version) {
+			throw new Error(`Cannot render ${component.id}: no version (key '${component.versionKey ?? component.versionFromPackageJson}')`);
+		}
+		const requires = component.requires
+			? Object.fromEntries(Object.entries(component.requires).map(([k, v]) => [k, substitute(v, commonVars)]))
+			: undefined;
+
+		const perTarget = {};
+		for (const target of targets) {
+			// Some upstreams tag a pre-release with a suffix but name the assets inside it after the
+			// base version — Ballerina's v2201.13.6-alpha2 ships ballerina-2201.13.6-swan-lake-*.zip.
+			// {versionBase} keeps the full version in the tag and drops the suffix in the filename.
+			const versionBase = typeof version === 'string' ? version.split('-')[0] : version;
+			const vars = { ...varsFor(target), version, versionBase };
+			let sourceUrl;
+			let sourceFile;
+			if (component.sourceFile) {
+				sourceFile = path.join(REPO_ROOT, substitute(component.sourceFile, vars));
+			} else {
+				// 'marketplace' (or no flavor) is the default `url`; other flavors must be declared
+				// in `sources` — fail loudly rather than publishing a different source than was built.
+				const flavor = sourceFlavors[component.id];
+				let urlTemplate = component.url;
+				if (flavor && flavor !== 'marketplace') {
+					urlTemplate = component.sources?.[flavor];
+					if (!urlTemplate) {
+						throw new Error(`Cannot render ${component.id}: no source URL for flavor '${flavor}'`);
+					}
+				}
+				sourceUrl = substitute(urlTemplate, vars);
+				if (sourceUrl.includes('{')) {
+					throw new Error(`Cannot render ${component.id} for ${target}: unresolved URL placeholder in '${sourceUrl}'`);
+				}
+			}
+			// Decode BEFORE basename: an encoded separator (..%2F) would otherwise survive basename
+			// and decode into a traversal that escapes the mirror dir.
+			const fileName = safeSegment(sourceFile
+				? path.basename(sourceFile)
+				: path.posix.basename(decodeURIComponent(new URL(sourceUrl).pathname)), 'file name');
+			const relPath = `components/${safeSegment(component.id, 'component id')}/${safeSegment(version, 'version')}/${fileName}`;
+			perTarget[target] = await resolveArtifact({
+				relPath,
+				sourceUrl,
+				sourceFile,
+				statement: { id: component.id, version, requires }
+			});
+		}
+
 		components.push({
 			id: component.id,
 			kind: component.kind,
 			version,
-			artifact,
 			...(requires ? { requires } : {}),
-			rollout: { percentage: 100 }
+			rollout: { percentage: Number(component.rolloutPercentage ?? 100) },
+			recommended: !!component.recommended,
+			targets: perTarget
 		});
 	}
 
-	// App installer (core-app update) — optional; only when an installer URL is supplied.
-	// Mirrored to the bucket like every other artifact when --artifacts-base is set.
-	let app;
-	if (args['app-installer-url']) {
-		const sourceUrl = args['app-installer-url'];
-		const fileName = safeSegment(path.posix.basename(decodeURIComponent(new URL(sourceUrl).pathname)), 'installer file name');
-		const relPath = `app/${safeSegment(appVersion, 'app version')}/${fileName}`;
-		const installer = { url: artifactsBase ? `${artifactsBase}/${relPath}` : sourceUrl };
-		if (noDownload) {
-			installer.sha256 = 'PLACEHOLDER_NO_DOWNLOAD';
-			installer.sizeBytes = 0;
-		} else {
-			const mirrorPath = artifactsBase ? path.join(mirrorDir, relPath) : undefined;
-			const { sha256, sizeBytes } = await hashAndSize(sourceUrl, mirrorPath);
-			installer.sha256 = sha256;
-			installer.sizeBytes = sizeBytes;
-		}
-		if (artifactsBase) {
-			installer.signature = {
-				statementUrl: `${artifactsBase}/${relPath}.statement.json`,
-				sigUrl: `${artifactsBase}/${relPath}.statement.json.sig`
+	// Core-app entry. `appliesTo` is a range over the CLIENT's CURRENT version, which is how one
+	// document serves several release lines: publish 5.1.z with appliesTo ">=5.1.0 <5.2.0" and a
+	// 5.2.x client is simply not matched by it.
+	const apps = [];
+	const releaseBase = typeof args['app-release-base'] === 'string' ? args['app-release-base'].replace(/\/+$/, '') : '';
+	if (releaseBase || artifactsBase) {
+		const installerNames = config.app?.installers ?? {};
+		const squirrelNames = config.app?.squirrel ?? {};
+		const perTarget = {};
+		for (const target of targets) {
+			const installerName = installerNames[target];
+			if (!installerName) {
+				continue; // no core-app installer published for this target
+			}
+			const fileName = safeSegment(substitute(installerName, { version: appVersion, appVersion }), 'installer file name');
+			const relPath = `app/${safeSegment(appVersion, 'app version')}/${fileName}`;
+			const entry = {
+				installer: await resolveArtifact({
+					relPath,
+					sourceUrl: releaseBase ? `${releaseBase}/${fileName}` : undefined,
+					statement: { id: 'app', version: appVersion }
+				})
 			};
-			if (!noDownload) {
-				writeStatement(path.join(mirrorDir, relPath), {
-					id: 'app',
-					version: appVersion,
-					sha256: installer.sha256,
-					sizeBytes: installer.sizeBytes
-				});
+			// Squirrel.Mac payload: the editor-only .app zip. Its provenance is macOS code signing,
+			// which Squirrel enforces itself, so it carries a URL only.
+			const squirrelName = squirrelNames[target];
+			if (squirrelName) {
+				const zip = safeSegment(substitute(squirrelName, { version: appVersion, appVersion }), 'squirrel file name');
+				entry.squirrel = { url: `${artifactsBase || releaseBase}/${artifactsBase ? `app/${appVersion}/${zip}` : zip}` };
 			}
+			perTarget[target] = entry;
 		}
-		app = { version: appVersion, minAutoUpdateFromVersion: args['app-min-version'] || undefined, installer };
-		// The commit this build was produced from (product-integrator root sha). The update
-		// server's Squirrel endpoint compares the mac client's commit against this.
-		if (args['app-commit']) {
-			app.commit = args['app-commit'];
-		}
-		// Squirrel.Mac (darwin): embed the URL of the editor-only .app zip so the update server
-		// serves the /api/update/darwin* feed straight from this signed manifest — no separate
-		// squirrel.json artifact. Prefer the mirrored CDN copy (uploaded by the mac build job to
-		// artifacts/app/{version}/ with this exact name); fall back to an explicitly supplied URL
-		// (e.g. the GitHub release asset) so mac updates are testable before a CDN exists.
-		if (platform === 'darwin') {
-			const zipName = `wso2-integrator-${safeSegment(appVersion, 'app version')}-${arch}-mac.zip`;
-			if (artifactsBase) {
-				app.squirrel = { url: `${artifactsBase}/app/${appVersion}/${zipName}` };
-			} else if (typeof args['app-squirrel-url'] === 'string' && args['app-squirrel-url']) {
-				app.squirrel = { url: args['app-squirrel-url'] };
-			}
-		}
-	}
-
-	// Only reference components that were actually emitted above, so the recommended set can
-	// never point at a component missing from the manifest (e.g. one skipped for lack of a CDN).
-	const emittedIds = new Set(components.map(c => c.id));
-	const recommendedMembers = {};
-	for (const component of config.components) {
-		const version = resolveVersion(component);
-		if (component.recommended && version && emittedIds.has(component.id)) {
-			recommendedMembers[component.id] = version;
+		if (Object.keys(perTarget).length > 0) {
+			apps.push({
+				version: appVersion,
+				...(args['app-commit'] ? { commit: args['app-commit'] } : {}),
+				...(args['app-applies-to'] ? { appliesTo: args['app-applies-to'] } : {}),
+				rollout: { percentage: Number(args['app-rollout'] ?? 100) },
+				targets: perTarget
+			});
 		}
 	}
 
@@ -422,29 +408,26 @@ const requires = component.requires
 	const expiresDays = Number(args['expires-days'] ?? 90);
 	const expiresAt = new Date(Date.parse(publishedAt) + expiresDays * 24 * 60 * 60 * 1000).toISOString();
 
-	const manifest = {
-		schemaVersion: 1,
+	const source = {
+		schemaVersion: 2,
 		channel,
-		platform,
-		arch,
 		sequence,
 		publishedAt,
 		expiresAt,
-		...(app ? { app } : {}),
-		components,
-		recommendedSet: { name: `${channel}-${appVersion}`, members: recommendedMembers }
+		apps,
+		components
 	};
 
-	const json = JSON.stringify(manifest, null, 2);
+	const json = JSON.stringify(source, null, 2);
 	if (args.out) {
 		writeFileSync(args.out, json + '\n', 'utf8');
-		process.stderr.write(`Wrote ${args.out} (${components.length} components)\n`);
+		process.stderr.write(`Wrote ${args.out} (${components.length} components x ${targets.length} targets, ${apps.length} app entries)\n`);
 	} else {
 		process.stdout.write(json + '\n');
 	}
 }
 
 main().catch(err => {
-	process.stderr.write(`generate-update-manifest failed: ${err.message}\n`);
+	process.stderr.write(`generate-update-source failed: ${err.message}\n`);
 	process.exit(1);
 });
