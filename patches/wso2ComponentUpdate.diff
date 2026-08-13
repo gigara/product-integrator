@@ -488,7 +488,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/wso2ComponentUpdateService.ts
-@@ -0,0 +1,1249 @@
+@@ -0,0 +1,1272 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -1131,16 +1131,18 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		if (!this.isAllowedUrl(url)) {
 +			throw new Error(`Artifact host not allowed: ${url}`);
 +		}
++		// Provenance FIRST, before a byte is fetched. The statement corroborates the digest this
++		// method then enforces, so checking it up front means a relabelled or unsigned artifact
++		// costs one small request instead of a few hundred MB. It also keeps statement failures out
++		// of the download retry loop, where a hiccup fetching a 300-byte file would otherwise
++		// re-download the whole artifact.
++		await this.verifyArtifactStatement(url, expected);
 +		// Reuse an already-downloaded file whose contents still match — e.g. from a previous update
 +		// attempt — so a re-click doesn't re-fetch hundreds of MB. The sha256 comparison guards
 +		// against a truncated or corrupt prior download (mismatch/absent → fall through to download).
 +		try {
 +			if (await this.sha256OfFile(destPath) === expectedSha256.toLowerCase()) {
 +				this.logService.info(`[wso2Update] reusing already-downloaded ${destPath} (sha256 match)`);
-+				// Still verify provenance: a file left on disk by an earlier attempt has only been
-+				// shown to match the expected hash, and skipping the check here would make the
-+				// reuse path weaker than a fresh download.
-+				await this.verifyArtifactStatement(url, expected);
 +				return;
 +			}
 +		} catch {
@@ -1149,7 +1151,6 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt++) {
 +			try {
 +				await this.downloadAttempt(url, destPath, expectedSha256);
-+				await this.verifyArtifactStatement(url, expected);
 +				return;
 +			} catch (err) {
 +				const retryable = err instanceof DownloadError ? err.retryable : true;
@@ -1226,13 +1227,35 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		this.logService.info(`[wso2Update] verified signed statement for ${expected.id}@${expected.version}`);
 +	}
 +
-+	/** GETs a small text resource (statement / signature), failing hard rather than retrying. */
++	/**
++	 * GETs a small text resource (statement / signature) with the same retry policy as an artifact:
++	 * a transient fault fetching a few hundred bytes must not sink an update. Retried here rather
++	 * than by the caller's loop, which would re-download the artifact along with it. A 4xx is not
++	 * retried — the file genuinely is not there.
++	 */
 +	private async fetchTextOrThrow(url: string, callSite: string): Promise<string> {
-+		const context = await this.requestService.request({ url, headers: this.authHeaders(url), callSite }, CancellationToken.None);
-+		if (context.res.statusCode !== 200) {
-+			throw new DownloadError(`Failed to fetch ${url} (HTTP ${context.res.statusCode})`, false);
++		for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt++) {
++			try {
++				const context = await this.requestService.request({ url, headers: this.authHeaders(url), callSite }, CancellationToken.None);
++				const status = context.res.statusCode ?? 0;
++				if (status !== 200) {
++					throw new DownloadError(
++						`Failed to fetch ${url} (HTTP ${status})`,
++						status >= 500 || status === 429 || status === 408
++					);
++				}
++				return (await asText(context)) ?? '';
++			} catch (err) {
++				const retryable = err instanceof DownloadError ? err.retryable : true;
++				if (!retryable || attempt === DOWNLOAD_ATTEMPTS) {
++					throw err instanceof DownloadError ? err : new DownloadError(`Failed to fetch ${url}: ${err}`, false);
++				}
++				const delay = DOWNLOAD_RETRY_DELAYS_MS[attempt - 1] ?? DOWNLOAD_RETRY_DELAYS_MS[DOWNLOAD_RETRY_DELAYS_MS.length - 1];
++				this.logService.warn(`[wso2Update] fetch attempt ${attempt}/${DOWNLOAD_ATTEMPTS} for ${url} failed (${err}); retrying in ${delay}ms`);
++				await new Promise<void>(resolve => setTimeout(resolve, delay));
++			}
 +		}
-+		return (await asText(context)) ?? '';
++		throw new DownloadError(`Failed to fetch ${url}`, false); // unreachable: the loop returns or throws
 +	}
 +
 +	/**
