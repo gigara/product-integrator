@@ -154,6 +154,39 @@ isolated function releaseCore(string ver) returns string {
     return core;
 }
 
+// The server-configured override for this client, or () when none applies.
+//
+// First match wins, like the index, so an operator can put a narrow exception above a broader one.
+// An entry without `channel` applies to every channel; an entry with one applies only to that
+// channel, which is what lets a line be moved on beta without touching stable.
+isolated function lineOverrideFor(string channel, string? clientVersion) returns string? {
+    return pickOverride(lineOverrides, channel, clientVersion);
+}
+
+// The selection rule itself, taking the list as an argument so it can be tested without depending
+// on what a particular deployment happens to configure.
+isolated function pickOverride(LineOverride[] configured, string channel, string? clientVersion)
+        returns string? {
+    foreach LineOverride entry in configured {
+        string? scope = entry?.channel;
+        if scope is string && scope != channel {
+            continue;
+        }
+        if clientVersion is () {
+            // A client that reports no version cannot be placed on a line, so only an
+            // unconstrained override can claim it — anything else would be a guess.
+            if entry.clients.trim() == "*" {
+                return entry.manifest;
+            }
+            continue;
+        }
+        if matchesSelector(clientVersion, entry.clients) {
+            return entry.manifest;
+        }
+    }
+    return ();
+}
+
 // The document that serves this client's line, or () when the index covers no line it belongs to.
 // First match wins; see IndexEntry for why the order is the contract.
 public isolated function selectManifest(SourceIndex index, string? clientVersion) returns string? {

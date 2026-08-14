@@ -398,3 +398,25 @@ function testSourceFileNamesRejectTraversal() {
     test:assertFalse(isSourceFile("source-5.2.1.txt"));
     test:assertFalse(isSourceFile("manifest.json"));
 }
+
+@test:Config {}
+function testLineOverrideMatchingIsChannelScopedAndOrdered() {
+    // lineOverrides is `configurable`, so the test drives the matching directly rather than the
+    // deployment value: what matters is the selection rule, not what any one deployment configures.
+    LineOverride[] configured = [
+        {clients: "5.1.4", manifest: "source-pinned.json"},
+        {clients: "5.1.x", manifest: "source-5.3.0.json", note: "5.1 EOL"},
+        {clients: "5.2.x", manifest: "source-beta-only.json", channel: "beta"}
+    ];
+    // First match wins, so the pin above the wildcard is reachable.
+    test:assertEquals(pickOverride(configured, "stable", "5.1.4"), "source-pinned.json");
+    test:assertEquals(pickOverride(configured, "stable", "5.1.5"), "source-5.3.0.json");
+    // A channel-scoped entry applies only to that channel.
+    test:assertEquals(pickOverride(configured, "beta", "5.2.0"), "source-beta-only.json");
+    test:assertEquals(pickOverride(configured, "stable", "5.2.0"), ());
+    // Matching nothing falls through to the index rather than withholding everything.
+    test:assertEquals(pickOverride(configured, "stable", "9.9.9"), ());
+    // A client that reports no version is only claimed by an unconstrained entry.
+    test:assertEquals(pickOverride(configured, "stable", ()), ());
+    test:assertEquals(pickOverride([{clients: "*", manifest: "all.json"}], "stable", ()), "all.json");
+}

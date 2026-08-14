@@ -394,11 +394,14 @@ function loadSource(string channel, string? clientVersion = ()) returns SourceMa
 // Returns "" when a layer exists but covers no line this client belongs to, which is served as
 // "no updates" rather than a guess at which line the client should be on.
 function resolveSourceFileName(string channel, string? clientVersion) returns [string, boolean]|error {
-    // An override table is a list of EXCEPTIONS, not a complete routing table: an entry that
-    // matches wins outright, and matching nothing falls through to the index rather than meaning
-    // "no updates". Otherwise adding a single exception would silently cut off every other client.
-    string? overridden = check readSelector(channel, "overrides.json", clientVersion);
-    if overridden is string && overridden != "" {
+    // Server-configured exceptions win outright; matching none of them falls through to the index.
+    string? overridden = lineOverrideFor(channel, clientVersion);
+    if overridden is string {
+        if !isSourceFile(overridden) {
+            // Configuration, not a missing file: say so rather than turning it into a store lookup
+            // for whatever was typed.
+            return error(string `lineOverrides names an invalid manifest file: ${overridden}`);
+        }
         log:printInfo(string `line override selected ${overridden} for client ${clientVersion ?: "<none>"}`);
         return [overridden, true];
     }
@@ -412,11 +415,10 @@ function resolveSourceFileName(string channel, string? clientVersion) returns [s
     return [selected, false];
 }
 
-// Whether an operator override picked this client's document, which marks the crossing as
+// Whether a configured override picked this client's document, which marks the crossing as
 // deliberate for the guards that would otherwise refuse it.
 function overrideApplies(string channel, string? clientVersion) returns boolean|error {
-    string? overridden = check readSelector(channel, "overrides.json", clientVersion);
-    return overridden is string && overridden != "";
+    return lineOverrideFor(channel, clientVersion) is string;
 }
 
 // Resolves a client version against one selector table. Returns () when the table is not published,

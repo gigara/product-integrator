@@ -179,6 +179,17 @@ public type IndexEntry record {
     string note?;
 };
 
+// A server-configured exception to the published index (see `lineOverrides` in config.bal).
+//
+// Field names avoid Ballerina's reserved words deliberately: these are read straight out of
+// Config.toml, and `match` would have to be quoted there and in every operator's muscle memory.
+public type LineOverride record {
+    string clients;
+    string manifest;
+    string channel?;
+    string note?;
+};
+
 // Maps a client's app version to the source document that serves its release line, so each release
 // publishes an immutable document of its own instead of rewriting a shared one.
 //

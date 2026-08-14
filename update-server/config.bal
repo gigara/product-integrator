@@ -61,6 +61,28 @@ configurable string adminToken = "";
 // alternative would strand them with no updates at all, permanently.
 configurable boolean restrictAppUpdatesToMinorLine = true;
 
+// Server-side overrides of the published index, applied BEFORE it.
+//
+// index.json is maintained automatically — every release claims its own line as it publishes — so
+// there is otherwise no way to intervene between releases. Two cases need one: repointing a line at
+// an earlier document after a bad release, and moving an end-of-life line onto a newer one.
+//
+// This is deployment configuration rather than a file in the object store on purpose. An override
+// decides which build a whole population of clients is offered, so it should travel through the
+// same review and deploy path as the rest of the server, and it should not be rewritable by anyone
+// holding the admin publish token.
+//
+// A list of EXCEPTIONS, not a routing table: the first entry whose `clients` selector matches wins,
+// and matching nothing falls through to the index. `clients` takes the same forms the index does —
+// an exact version (5.1.4), a wildcard (5.1.x, 5.x, *), or a range (">=5.1.0 <5.2.0"). Leave
+// `channel` unset to apply to every channel.
+//
+//   [[lineOverrides]]
+//   clients = "5.1.x"
+//   manifest = "source-5.3.0.json"
+//   note = "5.1 end of life - migrate onto 5.3"
+configurable LineOverride[] lineOverrides = [];
+
 // Tokens accepted on the CLIENT-facing read endpoints (manifest + Squirrel feed). Empty (the
 // default) leaves those endpoints open, which is the behaviour every existing client depends on.
 // Populate it to require `Authorization: Bearer <token>`; unauthenticated checks then get 401.
