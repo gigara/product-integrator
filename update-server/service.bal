@@ -203,15 +203,26 @@ service / on updateListener {
         return jsonResponse(200, {checks: metricsSnapshot().toJson()});
     }
 
-    // Admin publish: writes a manifest/signature/certificate to the store.
-    // Disabled (404) unless `adminToken` is configured; requires a matching
-    // `Authorization: Bearer <token>` header. Manifests are shape-validated.
-    // Admin publish of the source document (one per channel).
+    // Admin publish of a source-layout file: a release's document, its signature, or the index.
     //
-    // The body is read explicitly rather than declared as `@http:Payload byte[]`: the
-    // publisher sends the document as application/json (and its signature as text/plain),
-    // and data binding rejects both of those against byte[] before the resource ever runs.
-    // The signature must also survive byte-for-byte, so it is never round-tripped as JSON.
+    // NOT the path CI uses. A release writes to the bucket directly with `aws s3 cp`, so this
+    // endpoint exists for a deployment with NO bucket configured, where the local data directory is
+    // the only store and nothing else can put a document there.
+    //
+    // With a bucket configured it still write-throughs to it, which makes it a second way into the
+    // store that bypasses CI. That is bounded rather than free: once `sourcePublicKey` is set the
+    // server verifies the signature before trusting a document, so the worst this allows is
+    // replaying an older validly-signed one, not introducing a forged one. A production deployment
+    // that wants CI to be the only writer simply leaves `adminToken` unset, which disables this
+    // endpoint entirely.
+    //
+    // Disabled (404, not 401) unless `adminToken` is configured, so an unconfigured deployment does
+    // not advertise that the endpoint is there. Requires `Authorization: Bearer <token>`.
+    //
+    // The body is read explicitly rather than declared as `@http:Payload byte[]`: the publisher
+    // sends the document as application/json (and its signature as text/plain), and data binding
+    // rejects both of those against byte[] before the resource ever runs. The signature must also
+    // survive byte-for-byte, so it is never round-tripped as JSON.
     resource function put api/v1/updates/[string channel]/[string fileName](http:Request request)
             returns http:Response {
         http:Response? denied = authGuard(request);
