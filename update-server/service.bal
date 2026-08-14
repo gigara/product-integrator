@@ -129,7 +129,8 @@ service / on updateListener {
             if src is () {
                 return noUpdate; // nothing published for this channel
             }
-            SourceApp? app = decideSquirrel(src, string `darwin-${arch}`, wiversion);
+            boolean viaOverride = check overrideApplies(quality, wiversion);
+            SourceApp? app = decideSquirrel(src, string `darwin-${arch}`, wiversion, viaOverride);
             if app is () {
                 return noUpdate; // no Squirrel payload for this target/line
             }
@@ -142,7 +143,12 @@ service / on updateListener {
             }
             // Belt and braces alongside `appliesTo`: a document that omits the range is still held
             // to the client's own line, so a cross-line build cannot reach it by accident.
-            if restrictAppUpdatesToMinorLine && wiversion is string {
+            //
+            // An operator override is exempt. Its entire purpose is to send a line somewhere it
+            // would not go on its own — moving an end-of-life 5.1.x onto 5.3, say — and a guard
+            // against ACCIDENTAL crossings must not veto a deliberate one, or the override would
+            // appear to work everywhere except macOS.
+            if restrictAppUpdatesToMinorLine && !viaOverride && wiversion is string {
                 string? clientLine = minorLine(wiversion);
                 string? targetLine = minorLine(app.'version);
                 if clientLine is string && targetLine is string && clientLine != targetLine {
@@ -194,7 +200,8 @@ service / on updateListener {
             if src is () {
                 return nothing;
             }
-            UpdateCheckResponse? decision = decideUpdates(src, body);
+            boolean viaOverride = check overrideApplies(channel, body.appVersion);
+            UpdateCheckResponse? decision = decideUpdates(src, body, viaOverride);
             if decision is () {
                 return nothing;
             }
@@ -359,7 +366,7 @@ function buildFileResponse(string channel, string platform, string arch, string 
 // A client whose version matches no index entry gets NOTHING, deliberately: guessing a line for it
 // would mean offering a build from a line we were never asked to serve it.
 function loadSource(string channel, string? clientVersion = ()) returns SourceManifest|error? {
-    string fileName = check resolveSourceFileName(channel, clientVersion);
+    [string, boolean] [fileName, _] = check resolveSourceFileName(channel, clientVersion);
     if fileName == "" {
         return ();
     }
@@ -376,28 +383,63 @@ function loadSource(string channel, string? clientVersion = ()) returns SourceMa
     return parsed.cloneWithType(SourceManifest);
 }
 
-// The document name for this client: from the index when one is published, else the flat
-// `source.json`. Returns "" when an index exists but covers no line this client belongs to.
-function resolveSourceFileName(string channel, string? clientVersion) returns string|error {
-    [byte[], string]|error? stored = readSourceManifest(channel, "index.json");
+// The document name for this client, plus whether an operator override chose it.
+//
+// Two layers, checked in order:
+//   overrides.json — operator-maintained, wins outright. Nothing writes it automatically, so an
+//                    entry here is always a deliberate act: repointing a line at an older document
+//                    after a bad release, or moving an end-of-life line onto a newer one.
+//   index.json     — the table each release updates as it publishes.
+//
+// Returns "" when a layer exists but covers no line this client belongs to, which is served as
+// "no updates" rather than a guess at which line the client should be on.
+function resolveSourceFileName(string channel, string? clientVersion) returns [string, boolean]|error {
+    // An override table is a list of EXCEPTIONS, not a complete routing table: an entry that
+    // matches wins outright, and matching nothing falls through to the index rather than meaning
+    // "no updates". Otherwise adding a single exception would silently cut off every other client.
+    string? overridden = check readSelector(channel, "overrides.json", clientVersion);
+    if overridden is string && overridden != "" {
+        log:printInfo(string `line override selected ${overridden} for client ${clientVersion ?: "<none>"}`);
+        return [overridden, true];
+    }
+    string? selected = check readSelector(channel, "index.json", clientVersion);
+    if selected is () {
+        return ["source.json", false]; // no index published: single-document layout
+    }
+    if selected == "" {
+        log:printInfo(string `no index entry matches client version ${clientVersion ?: "<none>"}`);
+    }
+    return [selected, false];
+}
+
+// Whether an operator override picked this client's document, which marks the crossing as
+// deliberate for the guards that would otherwise refuse it.
+function overrideApplies(string channel, string? clientVersion) returns boolean|error {
+    string? overridden = check readSelector(channel, "overrides.json", clientVersion);
+    return overridden is string && overridden != "";
+}
+
+// Resolves a client version against one selector table. Returns () when the table is not published,
+// "" when it is published but matches nothing, else the manifest file it names.
+function readSelector(string channel, string fileName, string? clientVersion) returns string?|error {
+    [byte[], string]|error? stored = readSourceManifest(channel, fileName);
     if stored is error {
         return stored;
     }
     if stored is () {
-        return "source.json"; // no index published: single-document layout
+        return ();
     }
     string text = check string:fromBytes(stored[0]);
     json parsed = check text.fromJsonString();
-    SourceIndex index = check parsed.cloneWithType(SourceIndex);
-    string? selected = selectManifest(index, clientVersion);
+    SourceIndex selectors = check parsed.cloneWithType(SourceIndex);
+    string? selected = selectManifest(selectors, clientVersion);
     if selected is () {
-        log:printInfo(string `no index entry matches client version ${clientVersion ?: "<none>"}`);
         return "";
     }
     if !isSourceFile(selected) {
-        // The index is hand-maintained, so a typo here would otherwise become a store lookup for
+        // These tables are hand-maintained, so a typo would otherwise become a store lookup for
         // whatever was written. Reject it as configuration, not as a missing file.
-        return error(string `index names an invalid manifest file: ${selected}`);
+        return error(string `${fileName} names an invalid manifest file: ${selected}`);
     }
     return selected;
 }

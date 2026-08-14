@@ -188,7 +188,8 @@ isolated function passesRollout(Rollout? rollout, int? bucket) returns boolean {
 }
 
 // Picks the newest app entry this client is eligible for, or () when it is already current.
-isolated function decideApp(SourceManifest src, UpdateCheckRequest req, string target) returns AppOffer? {
+isolated function decideApp(SourceManifest src, UpdateCheckRequest req, string target,
+        boolean viaOverride = false) returns AppOffer? {
     SourceApp? best = ();
     foreach SourceApp app in src.apps {
         AppTarget? forTarget = app.targets[target];
@@ -196,7 +197,11 @@ isolated function decideApp(SourceManifest src, UpdateCheckRequest req, string t
             continue; // this release publishes nothing for the client's platform
         }
         string? appliesTo = app?.appliesTo;
-        if appliesTo is string && !satisfiesRange(req.appVersion, appliesTo) {
+        // An operator override skips this: pointing a line at a document is an instruction to serve
+        // it, and the document's own range describes the line it was BUILT for, which by definition
+        // is not the line being migrated. Honouring it here would make an override move a client's
+        // components while silently leaving its app behind.
+        if !viaOverride && appliesTo is string && !satisfiesRange(req.appVersion, appliesTo) {
             continue; // a different release line's entry
         }
         if compareVersions(app.'version, req.appVersion) <= 0 {
@@ -311,7 +316,8 @@ isolated function requiresSatisfied(SourceComponent component, UpdateCheckReques
 
 // The whole decision. Returns () when this client has nothing to take, which the caller turns
 // into 204.
-isolated function decideUpdates(SourceManifest src, UpdateCheckRequest req) returns UpdateCheckResponse? {
+isolated function decideUpdates(SourceManifest src, UpdateCheckRequest req,
+        boolean viaOverride = false) returns UpdateCheckResponse? {
     string target = string `${req.platform}-${req.arch}`;
     map<string> installed = req?.components ?: {};
     map<SourceComponent> applicable = applicableComponents(src, req, target);
@@ -349,7 +355,7 @@ isolated function decideUpdates(SourceManifest src, UpdateCheckRequest req) retu
         offers.push(offer);
     }
 
-    AppOffer? app = decideApp(src, req, target);
+    AppOffer? app = decideApp(src, req, target, viaOverride);
     if app is () && offers.length() == 0 {
         return ();
     }
@@ -371,7 +377,8 @@ isolated function decideUpdates(SourceManifest src, UpdateCheckRequest req) retu
 //
 // Picks the newest app entry that publishes a Squirrel payload for this target and, where the
 // client did report its version, belongs to that client's release line.
-isolated function decideSquirrel(SourceManifest src, string target, string? wiversion) returns SourceApp? {
+isolated function decideSquirrel(SourceManifest src, string target, string? wiversion,
+        boolean viaOverride = false) returns SourceApp? {
     SourceApp? best = ();
     foreach SourceApp app in src.apps {
         AppTarget? forTarget = app.targets[target];
@@ -382,7 +389,7 @@ isolated function decideSquirrel(SourceManifest src, string target, string? wive
             continue; // this target ships no Squirrel payload (windows/linux)
         }
         string? appliesTo = app?.appliesTo;
-        if appliesTo is string && wiversion is string && !satisfiesRange(wiversion, appliesTo) {
+        if !viaOverride && appliesTo is string && wiversion is string && !satisfiesRange(wiversion, appliesTo) {
             continue; // a different release line's entry
         }
         if best is () || compareVersions(app.'version, best.'version) > 0 {
