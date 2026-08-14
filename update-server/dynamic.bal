@@ -20,64 +20,37 @@
 // signature stays valid). The kill-switch simply withholds the manifest (HTTP 204 = "no update
 // available", which the client already treats as up-to-date) for revoked scopes.
 
-import ballerina/log;
 
 // ---------------------------------------------------------------------------
 // Kill-switch (revocations)
 // ---------------------------------------------------------------------------
 
-// A revoked scope. `platform`/`arch` of "*" match any, so an operator can revoke a
-// single (channel, platform, arch), a whole platform, or an entire channel. The set is persisted as
-// a JSON array through the shared control store — `manifests/control/revocations.json` in the
-// bucket, or <dataDir>/revocations.json for a single-process local deployment — so it survives
-// restarts AND is seen by every replica.
+// A revoked scope. `platform`/`arch` of "*" match any, so an operator can revoke a single
+// (channel, platform, arch), a whole platform, or an entire channel.
+//
+// Supplied as deployment configuration (see `revocations` in config.bal), like the line overrides.
+// It was previously a mutable file written by an admin endpoint; that made the most destructive
+// control in the system — withhold updates from everyone — settable by anyone holding the CI
+// publish token, and left no record of who withheld what or when.
 public type Revocation record {
     string channel;
     string platform = "*";
     string arch = "*";
+    // Why this scope was withheld. Never read by the server; it exists so the config records the
+    // reason next to the decision, which is most of the value of moving this out of an endpoint.
+    string note?;
 };
 
-// Admin request body for POST /api/v1/admin/revocations.
-public type RevocationRequest record {
-    string channel;
-    string platform?;
-    string arch?;
-    boolean revoked;
-};
-
-const REVOCATIONS_FILE = "revocations.json";
-
-// Reads the persisted revocation list (empty when absent).
-//
-// Goes through the shared control store rather than straight to disk: on a multi-replica deployment
-// a local file would make a kill-switch apply only to the replica that served the POST setting it.
-function loadRevocations() returns Revocation[]|error {
-    [byte[], string]|error? stored = readControlFile(REVOCATIONS_FILE);
-    if stored is error {
-        return stored;
-    }
-    if stored is () {
-        return [];
-    }
-    string text = check string:fromBytes(stored[0]);
-    json data = check text.fromJsonString();
-    return data.cloneWithType();
+// True when the given (channel, platform, arch) is currently revoked.
+isolated function isRevoked(string channel, string platform, string arch) returns boolean {
+    return matchesRevocation(revocations, channel, platform, arch);
 }
 
-// Persists the revocation list.
-function saveRevocations(Revocation[] revocations) returns error? {
-    return writeControlFile(REVOCATIONS_FILE, revocations.toJsonString().toBytes());
-}
-
-// True when the given (channel, platform, arch) is currently revoked. A read failure is
-// treated as "not revoked" (fail-open) so a corrupt file never blocks all updates; it is logged.
-function isRevoked(string channel, string platform, string arch) returns boolean {
-    Revocation[]|error revocations = loadRevocations();
-    if revocations is error {
-        log:printError("failed to read revocations; treating scope as not revoked", revocations);
-        return false;
-    }
-    foreach Revocation r in revocations {
+// The matching rule itself, taking the list as an argument so it can be tested without depending on
+// what a particular deployment configures — the same split as pickOverride().
+isolated function matchesRevocation(Revocation[] configured, string channel, string platform, string arch)
+        returns boolean {
+    foreach Revocation r in configured {
         if r.channel == channel
                 && (r.platform == "*" || r.platform == platform)
                 && (r.arch == "*" || r.arch == arch) {
@@ -85,26 +58,6 @@ function isRevoked(string channel, string platform, string arch) returns boolean
         }
     }
     return false;
-}
-
-// Adds (revoked=true) or removes (revoked=false) a revocation for an exact scope and returns
-// the updated list. The read-modify-write is serialized with a lock so concurrent admin calls
-// don't clobber each other.
-function setRevocation(string channel, string platform, string arch, boolean revoked) returns Revocation[]|error {
-    lock {
-        Revocation[] current = check loadRevocations();
-        Revocation[] next = [];
-        foreach Revocation r in current {
-            if !(r.channel == channel && r.platform == platform && r.arch == arch) {
-                next.push(r);
-            }
-        }
-        if revoked {
-            next.push({channel, platform, arch});
-        }
-        check saveRevocations(next);
-        return next.clone();
-    }
 }
 
 // ---------------------------------------------------------------------------

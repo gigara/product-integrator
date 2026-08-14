@@ -83,6 +83,24 @@ configurable boolean restrictAppUpdatesToMinorLine = true;
 //   note = "5.1 end of life - migrate onto 5.3"
 configurable LineOverride[] lineOverrides = [];
 
+// Kill-switch: scopes that are withheld from clients entirely. A revoked scope answers "no update"
+// (204) rather than erroring, so a client sees itself as up to date instead of failing every check.
+//
+// Deployment configuration for the same reasons as `lineOverrides`: this is the most destructive
+// control in the system — it stops updates reaching an entire channel — so it belongs on the
+// reviewed, audited path rather than behind an endpoint whose token also publishes releases.
+//
+// The cost is honest and worth stating: revoking now takes a redeploy. If a bad release has to be
+// stopped in seconds rather than minutes, unpublish or repoint it instead — `lineOverrides` can
+// send a line back to the previous document without touching this.
+//
+// `platform` and `arch` default to "*", so the common case is one line naming a channel.
+//
+//   [[revocations]]
+//   channel = "insider"
+//   note    = "5.2.1 breaks ICP startup on Windows"
+configurable Revocation[] revocations = [];
+
 // Tokens accepted on the CLIENT-facing read endpoints (manifest + Squirrel feed). Empty (the
 // default) leaves those endpoints open, which is the behaviour every existing client depends on.
 // Populate it to require `Authorization: Bearer <token>`; unauthenticated checks then get 401.

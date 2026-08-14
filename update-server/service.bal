@@ -215,33 +215,17 @@ service / on updateListener {
         }
     }
 
+    // Admin: what this deployment is currently withholding. READ ONLY — revocations are deployment
+    // configuration now, so they change by redeploying, not by calling an endpoint. Kept because
+    // "what is being withheld right now, and why" is the first question during an incident, and
+    // reading it back from the running server beats trusting that the config you are looking at is
+    // the config that is deployed.
     resource function get api/v1/admin/revocations(http:Request request) returns http:Response {
         http:Response? denied = authGuard(request);
         if denied is http:Response {
             return denied;
         }
-        Revocation[]|error revocations = loadRevocations();
-        if revocations is error {
-            log:printError("failed to list revocations", revocations);
-            return jsonResponse(500, {'error: "internal error"});
-        }
         return jsonResponse(200, {revocations: revocations.toJson()});
-    }
-
-    // Admin: set or clear a kill-switch revocation. Body: {channel, platform?, arch?, revoked}.
-    // Omitted platform/arch mean "*" (revoke the whole platform/channel).
-    resource function post api/v1/admin/revocations(http:Request request, @http:Payload RevocationRequest body)
-            returns http:Response {
-        http:Response? denied = authGuard(request);
-        if denied is http:Response {
-            return denied;
-        }
-        Revocation[]|error updated = setRevocation(body.channel, body.platform ?: "*", body.arch ?: "*", body.revoked);
-        if updated is error {
-            log:printError("failed to update revocation", updated);
-            return jsonResponse(400, {'error: updated.message()});
-        }
-        return jsonResponse(200, {revocations: updated.toJson()});
     }
 
     // Admin: in-memory update-check counters (per scope and per appVersion). Bearer adminToken.
