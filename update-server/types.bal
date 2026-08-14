@@ -22,9 +22,27 @@
 // admin-publish validation, tests, and documentation of the contract.
 
 // A detached-signature reference (cosign sign-blob output locations).
+// LEGACY: used only by the per-platform `Manifest` below, which the client no longer fetches.
+// New work belongs on `StatementRef`; this stays as-is so the retired fixtures still describe what
+// that endpoint actually served (keyless cosign, signature + signing certificate).
 public type SignatureRef record {
     string sigUrl;
     string certUrl;
+};
+
+// Where an artifact's signed statement and its detached signature live.
+//
+// `statementUrl` is a small JSON document binding the artifact's identity to its bytes
+// ({id, version, sha256, sizeBytes, requires}); `sigUrl` is the detached signature over that
+// document, which the client verifies against its pinned public key. Signing the statement rather
+// than the bytes is what stops a manifest offering an old signed artifact under a new version label.
+//
+// Deliberately no `certUrl`: that belonged to the keyless-cosign model, where the signing
+// certificate was fetched alongside the signature. Signing is key-based now and the client pins the
+// public key, so there is no certificate to fetch.
+public type StatementRef record {
+    string statementUrl;
+    string sigUrl;
 };
 
 // A downloadable artifact with integrity metadata.
@@ -103,7 +121,7 @@ public type TargetArtifact record {
     string url;
     string sha256;
     int sizeBytes;
-    SignatureRef signature?;
+    StatementRef signature?;
 };
 
 // A component offered across targets. `requires` and `rollout` apply to every target alike.
