@@ -56,6 +56,17 @@ on:
         required: false
         default: 'insider'
         type: string
+      # Which clients this release serves. Each release publishes its own source-<version>.json and
+      # claims a line in the index, so a 5.2 release never overwrites the document 5.1.x clients are
+      # still served from. Accepts a wildcard (5.1.x), an exact version (5.1.4), a range
+      # (">=5.1.0 <5.2.0") or "*" for everything. Defaults to this build's own <major>.<minor>.x,
+      # which is what a normal release wants; set it explicitly for a hotfix that should reach only
+      # one version, or to hand an old line its migration build.
+      update_line_selector:
+        description: 'Client versions this release serves (e.g. 5.1.x). Defaults to <major>.<minor>.x of this build.'
+        required: false
+        default: ''
+        type: string
       # Under `workflow_call`, `github.ref` is the *caller's* triggering ref, so a dispatcher that
       # prepares a branch and then calls this workflow would compile the ref it was dispatched on
       # (main) rather than the branch it just prepared. Callers that prepare a branch pass its SHA
@@ -1726,11 +1737,96 @@ jobs:
 
       - name: Upload source document to update bucket
         if: ${{ steps.targets.outputs.targets != '' }}
+        env:
+          APP_VERSION: ${{ needs.resolve-versions.outputs.integrator_version }}
+          LINE_SELECTOR: ${{ inputs.update_line_selector }}
         run: |
-          # The server reads this; clients never do. Keep the manifests/ prefix PRIVATE — a publicly
+          set -euo pipefail
+          # The server reads these; clients never do. Keep the manifests/ prefix PRIVATE — a publicly
           # readable source document would let a client bypass the server and with it the
           # kill-switch, rollout and entitlement decisions.
           DEST="s3://${{ secrets.AWS_UPDATE_S3_BUCKET }}/manifests/${CHANNEL}/"
-          aws s3 cp source.json "${DEST}source.json" --content-type application/json --cache-control no-cache
-          aws s3 cp source.json.sig "${DEST}source.json.sig" --content-type text/plain --cache-control no-cache
-          echo "Published ${CHANNEL} source document (sequence ${{ github.run_number }}, targets ${{ steps.targets.outputs.targets }})"
+
+          # Publish under this release's own name. Overwriting a shared source.json is what let a
+          # 5.2 release delete the document 5.1.x clients were still served from.
+          DOC="source-${APP_VERSION}.json"
+          aws s3 cp source.json "${DEST}${DOC}" --content-type application/json --cache-control no-cache
+          aws s3 cp source.json.sig "${DEST}${DOC}.sig" --content-type text/plain --cache-control no-cache
+
+          # Default to this build's own line, so an ordinary release needs no extra input.
+          SELECTOR="${LINE_SELECTOR}"
+          if [ -z "${SELECTOR}" ]; then
+            SELECTOR="$(printf '%s' "${APP_VERSION}" | awk -F. '{print $1"."$2".x"}')"
+          fi
+
+          # Upsert this release's line into the index. The index is small, unsigned and hand-editable
+          # by design, so a read-modify-write here is safe in a way rewriting a signed document is
+          # not: the worst outcome is a stale pointer to an already-verified document.
+          if aws s3 cp "${DEST}index.json" index.json 2>/dev/null; then
+            echo "Existing index:"; cat index.json
+          else
+            echo '{"schemaVersion":1,"entries":[]}' > index.json
+            echo "No index yet; creating one."
+          fi
+          SELECTOR="${SELECTOR}" DOC="${DOC}" python3 - <<'PY'
+          import json, os, sys
+
+          selector, doc = os.environ["SELECTOR"], os.environ["DOC"]
+          index = json.load(open("index.json"))
+          entries = index.get("entries", [])
+
+          for position, entry in enumerate(entries):
+              if entry.get("match") == selector:
+                  entry["manifest"] = doc          # same line, newer document
+                  break
+          else:
+              # Appended, not prepended: first match wins, so inserting at the front would let this
+              # line shadow a more specific entry (a pinned hotfix) placed above it on purpose.
+              entries.append({"match": selector, "manifest": doc})
+              position = len(entries) - 1
+
+          def sample_version(sel):
+              """A version this selector is meant to serve, or None if we cannot derive one.
+
+              Only exact and wildcard selectors are checked. Deciding whether one RANGE subsumes
+              another is a different problem, and guessing at it would produce false failures on
+              a correct index."""
+              sel = sel.strip()
+              if sel in ("*", ""):
+                  return "999.999.999"
+              if any(c in sel for c in "<>="):
+                  return None
+              return ".".join("0" if p in ("x", "X", "*") else p for p in sel.split("."))
+
+          def matches(version, sel):
+              sel = sel.strip()
+              if sel in ("*", ""):
+                  return True
+              if any(c in sel for c in "<>="):
+                  return None                       # unknown; treated as "cannot rule out"
+              want, have = sel.split("."), version.split(".")
+              for i, segment in enumerate(want):
+                  if segment in ("x", "X", "*"):
+                      return True
+                  if i >= len(have) or have[i] != segment:
+                      return False
+              return len(want) == len(have)
+
+          # An entry that no client can ever reach is worse than a failed publish: the release looks
+          # published and simply never arrives. Fail here so the operator reorders the file instead.
+          probe = sample_version(selector)
+          if probe is not None:
+              for earlier in entries[:position]:
+                  if matches(probe, earlier.get("match", "")):
+                      sys.exit(
+                          f"Index entry '{selector}' -> {doc} is unreachable: entry "
+                          f"'{earlier.get('match')}' above it already matches {probe}, and the first "
+                          f"match wins. Move the more specific entry above it in index.json."
+                      )
+
+          index["entries"] = entries
+          json.dump(index, open("index.json", "w"), indent=2)
+          print(json.dumps(index, indent=2))
+          PY
+          aws s3 cp index.json "${DEST}index.json" --content-type application/json --cache-control no-cache
+          echo "Published ${CHANNEL} ${DOC} (sequence ${{ github.run_number }}, targets ${{ steps.targets.outputs.targets }}) serving ${SELECTOR}"
