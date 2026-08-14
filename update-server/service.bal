@@ -125,7 +125,7 @@ service / on updateListener {
             return noUpdate;
         }
         do {
-            SourceManifest? src = check loadSource(quality);
+            SourceManifest? src = check loadSource(quality, wiversion);
             if src is () {
                 return noUpdate; // nothing published for this channel
             }
@@ -190,7 +190,7 @@ service / on updateListener {
             return nothing;
         }
         do {
-            SourceManifest? src = check loadSource(channel);
+            SourceManifest? src = check loadSource(channel, body.appVersion);
             if src is () {
                 return nothing;
             }
@@ -349,35 +349,76 @@ function buildFileResponse(string channel, string platform, string arch, string 
 // The signature is checked over the exact bytes read, before parsing: the server composes every
 // client's response from this document, so accepting an unverified one would let whoever can write
 // to the bucket decide what every client is offered.
-function loadSource(string channel) returns SourceManifest|error? {
-    [byte[], string]|error? stored = readSourceManifest(channel, "source.json");
+// Resolves the document for a client's release line, then loads and verifies it.
+//
+// Each release publishes its own immutable document and adds a line to index.json, so a 5.2
+// release cannot overwrite the document 5.1.x clients are still served from. When no index is
+// published the single `source.json` layout is used unchanged, which is what existing deployments
+// and the tests run on.
+//
+// A client whose version matches no index entry gets NOTHING, deliberately: guessing a line for it
+// would mean offering a build from a line we were never asked to serve it.
+function loadSource(string channel, string? clientVersion = ()) returns SourceManifest|error? {
+    string fileName = check resolveSourceFileName(channel, clientVersion);
+    if fileName == "" {
+        return ();
+    }
+    [byte[], string]|error? stored = readSourceManifest(channel, fileName);
     if stored is error {
         return stored;
     }
     if stored is () {
         return ();
     }
-    check verifySource(channel, stored[0]);
+    check verifySource(channel, fileName, stored[0]);
     string text = check string:fromBytes(stored[0]);
     json parsed = check text.fromJsonString();
     return parsed.cloneWithType(SourceManifest);
 }
 
+// The document name for this client: from the index when one is published, else the flat
+// `source.json`. Returns "" when an index exists but covers no line this client belongs to.
+function resolveSourceFileName(string channel, string? clientVersion) returns string|error {
+    [byte[], string]|error? stored = readSourceManifest(channel, "index.json");
+    if stored is error {
+        return stored;
+    }
+    if stored is () {
+        return "source.json"; // no index published: single-document layout
+    }
+    string text = check string:fromBytes(stored[0]);
+    json parsed = check text.fromJsonString();
+    SourceIndex index = check parsed.cloneWithType(SourceIndex);
+    string? selected = selectManifest(index, clientVersion);
+    if selected is () {
+        log:printInfo(string `no index entry matches client version ${clientVersion ?: "<none>"}`);
+        return "";
+    }
+    if !isSourceFile(selected) {
+        // The index is hand-maintained, so a typo here would otherwise become a store lookup for
+        // whatever was written. Reject it as configuration, not as a missing file.
+        return error(string `index names an invalid manifest file: ${selected}`);
+    }
+    return selected;
+}
+
 // Fails unless the document's detached signature verifies against the configured public key.
 // Skipped, with a warning, when no key is configured — the state local development and tests run in.
-function verifySource(string channel, byte[] content) returns error? {
+function verifySource(string channel, string fileName, byte[] content) returns error? {
     if sourcePublicKey == "" {
         log:printWarn("source document signature verification disabled (no sourcePublicKey configured)");
         return ();
     }
     byte[] pemBytes = check array:fromBase64(sourcePublicKey);
     string pem = check string:fromBytes(pemBytes);
-    [byte[], string]|error? stored = readSourceManifest(channel, "source.json.sig");
+    // The signature travels with the document it covers, so a per-line layout verifies the file it
+    // actually selected rather than a fixed name that may describe a different line entirely.
+    [byte[], string]|error? stored = readSourceManifest(channel, fileName + ".sig");
     if stored is error {
         return stored;
     }
     if stored is () {
-        return error(string `source document for ${channel} has no signature`);
+        return error(string `source document ${fileName} for ${channel} has no signature`);
     }
     string signature = check string:fromBytes(stored[0]);
     boolean ok = check verifyDetachedSignature(content, signature, pem);

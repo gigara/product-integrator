@@ -331,3 +331,70 @@ function testDependenciesResolveAgainstTheClientsOwnLine() {
     });
     test:assertEquals(offeredVersion(five1, "companion"), "none");
 }
+
+// --- release-line index ---------------------------------------------------------------
+
+@test:Config {}
+function testSelectorFormsMatchTheRightVersions() {
+    // Exact.
+    test:assertTrue(matchesSelector("5.1.4", "5.1.4"));
+    test:assertFalse(matchesSelector("5.1.5", "5.1.4"));
+    // Wildcard: the segments before it must match, everything after is free.
+    test:assertTrue(matchesSelector("5.1.0", "5.1.x"));
+    test:assertTrue(matchesSelector("5.1.4", "5.1.x"));
+    test:assertFalse(matchesSelector("5.2.0", "5.1.x"));
+    test:assertTrue(matchesSelector("5.9.9", "5.x"));
+    test:assertFalse(matchesSelector("6.0.0", "5.x"));
+    // A pre-release belongs to its own line: 5.1.4-beta is still 5.1.x, not 5.2.x.
+    test:assertTrue(matchesSelector("5.1.4-beta", "5.1.x"));
+    test:assertFalse(matchesSelector("5.2.0-alpha", "5.1.x"));
+    // Range.
+    test:assertTrue(matchesSelector("5.1.4", ">=5.1.0 <5.2.0"));
+    test:assertFalse(matchesSelector("5.2.1", ">=5.1.0 <5.2.0"));
+    // Catch-all.
+    test:assertTrue(matchesSelector("7.0.0", "*"));
+    // A wildcard must not be read as a range comparison against the literal "5.1.x",
+    // which is what happens if the wildcard branch is checked after the range branch.
+    test:assertFalse(matchesSelector("9.9.9", "5.1.x"));
+}
+
+@test:Config {}
+function testIndexSelectsFirstMatchAndNothingWhenUncovered() {
+    SourceIndex index = {
+        schemaVersion: 1,
+        entries: [
+            {'match: "5.1.4", manifest: "source-5.1.4-hotfix.json"},
+            {'match: "5.1.x", manifest: "source-5.1.5.json"},
+            {'match: ">=5.2.0 <5.3.0", manifest: "source-5.2.1.json"}
+        ]
+    };
+    // First match wins: the pinned 5.1.4 entry beats the 5.1.x line entry below it.
+    test:assertEquals(selectManifest(index, "5.1.4"), "source-5.1.4-hotfix.json");
+    test:assertEquals(selectManifest(index, "5.1.5"), "source-5.1.5.json");
+    test:assertEquals(selectManifest(index, "5.2.1"), "source-5.2.1.json");
+    // A line the index does not cover gets nothing rather than a guess.
+    test:assertEquals(selectManifest(index, "4.9.0"), ());
+    // A client that reports no version at all is only served by a catch-all entry.
+    test:assertEquals(selectManifest(index, ()), ());
+    SourceIndex withCatchAll = {
+        schemaVersion: 1,
+        entries: [{'match: "5.1.x", manifest: "a.json"}, {'match: "*", manifest: "fallback.json"}]
+    };
+    test:assertEquals(selectManifest(withCatchAll, ()), "fallback.json");
+    test:assertEquals(selectManifest(withCatchAll, "9.0.0"), "fallback.json");
+}
+
+@test:Config {}
+function testSourceFileNamesRejectTraversal() {
+    test:assertTrue(isSourceFile("source.json"));
+    test:assertTrue(isSourceFile("index.json"));
+    test:assertTrue(isSourceFile("source-5.2.1.json"));
+    test:assertTrue(isSourceFile("source-5.2.1.json.sig"));
+    test:assertTrue(isSourceFile("source-5.1.4-testalpha1.json"));
+    // A hand-edited index must not be able to reach outside the channel prefix.
+    test:assertFalse(isSourceFile("../../etc/passwd"));
+    test:assertFalse(isSourceFile("source-../../evil.json"));
+    test:assertFalse(isSourceFile("a/b.json"));
+    test:assertFalse(isSourceFile("source-5.2.1.txt"));
+    test:assertFalse(isSourceFile("manifest.json"));
+}

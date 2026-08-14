@@ -164,6 +164,34 @@ public type SourceManifest record {
     SourceComponent[] components;
 };
 
+// --- release-line index ----------------------------------------------------------------
+
+// One line of the index: which source document serves clients whose version matches `match`.
+//
+// `match` accepts an exact version (5.1.4), a wildcard (5.1.x, 5.x, or * for everything), or a
+// range using the same comparators as `requires` (">=5.1.0 <5.2.0"). Entries are evaluated TOP
+// TO BOTTOM and the FIRST match wins, so put the specific ones above the catch-alls — that
+// ordering is the whole control surface for a hand-edited file, and "most specific wins" would
+// make the outcome depend on a similarity rule nobody can see while editing.
+public type IndexEntry record {
+    string 'match;
+    string manifest;
+    string note?;
+};
+
+// Maps a client's app version to the source document that serves its release line, so each release
+// publishes an immutable document of its own instead of rewriting a shared one.
+//
+// Deliberately NOT signature-checked, unlike the documents it points at. It can only choose among
+// documents that are themselves verified before use, so the worst a rewritten index can do is
+// withhold updates or select an older line — both of which the server can already do, and neither
+// of which puts unverified code in front of a client. Requiring a signature here would also make
+// the file impossible to correct by hand, which is how it is meant to be maintained.
+public type SourceIndex record {
+    int schemaVersion;
+    IndexEntry[] entries;
+};
+
 // --- update-check protocol -------------------------------------------------------------
 
 // What the client reports about itself. `bucket` is the client's own 0-99 rollout slot, computed

@@ -27,9 +27,20 @@ final readonly & string[] ALLOWED_PLATFORMS = ["darwin", "linux", "win32"];
 final readonly & string[] ALLOWED_ARCHS = ["x64", "arm64"];
 final readonly & string[] ALLOWED_FILES = ["manifest.json", "manifest.json.sig", "manifest.json.pem"];
 
-// The source document and its detached signature. The server verifies the signature before
-// trusting the document, so a compromised bucket cannot feed it a fabricated source.
-final readonly & string[] SOURCE_FILES = ["source.json", "source.json.sig"];
+// Files the source layout may contain, as a pattern rather than a fixed list: each release
+// publishes its own immutable document (source-5.2.1.json) alongside the index that selects it,
+// so the names are not knowable in advance.
+//
+// Accepts `index.json`, `source.json` (the single-document layout that predates the index) and
+// `source-<version>.json`, each optionally suffixed `.sig`. The version part is restricted to
+// characters that appear in a version string — deliberately excluding `/`, `\` and `.` runs — so a
+// name can never climb out of the channel directory or the bucket prefix it is joined to.
+isolated function isSourceFile(string fileName) returns boolean {
+    if fileName.includes("..") || fileName.includes("/") || fileName.includes("\\") {
+        return false;
+    }
+    return re `^(index|source|source-[A-Za-z0-9][A-Za-z0-9._+-]{0,63})\.json(\.sig)?$`.isFullMatch(fileName);
+}
 
 final readonly & map<string> CONTENT_TYPES = {
     "manifest.json": "application/json",
@@ -85,7 +96,7 @@ function readSourceManifest(string channel, string fileName) returns [byte[], st
     if allowedChannels.indexOf(channel) !is int {
         return error(string `unsupported channel: ${channel}`);
     }
-    if SOURCE_FILES.indexOf(fileName) !is int {
+    if !isSourceFile(fileName) {
         return error(string `unsupported file: ${fileName}`);
     }
     if s3Bucket != "" {
@@ -100,7 +111,7 @@ function writeSourceManifest(string channel, string fileName, byte[] content) re
     if allowedChannels.indexOf(channel) !is int {
         return error(string `unsupported channel: ${channel}`);
     }
-    if SOURCE_FILES.indexOf(fileName) !is int {
+    if !isSourceFile(fileName) {
         return error(string `unsupported file: ${fileName}`);
     }
     if s3Bucket != "" {

@@ -95,6 +95,84 @@ isolated function satisfiesRange(string ver, string range) returns boolean {
     return true;
 }
 
+// Does a client version match an index selector?
+//
+// Three forms, checked in this order:
+//   *              — everything (the catch-all an index usually ends with)
+//   5.1.x / 5.x    — wildcard: the segments before the wildcard must match exactly
+//   >=5.1.0 <5.2.0 — a range, using the same comparators as `requires`
+//   5.1.4          — anything else is an exact version
+//
+// The wildcard form is checked before the range form because it is not a range: "5.1.x" has no
+// comparator, so satisfiesRange would read it as an equality test against the literal "5.1.x".
+public isolated function matchesSelector(string clientVersion, string selector) returns boolean {
+    string trimmed = selector.trim();
+    if trimmed.length() == 0 || trimmed == "*" {
+        return true;
+    }
+    if trimmed.includes("x") || trimmed.includes("X") || trimmed.includes("*") {
+        return matchesWildcard(clientVersion, trimmed);
+    }
+    if trimmed.startsWith(">") || trimmed.startsWith("<") || trimmed.startsWith("=") {
+        return satisfiesRange(clientVersion, trimmed);
+    }
+    return compareVersions(clientVersion, trimmed) == 0;
+}
+
+// "5.1.x" matches 5.1.0, 5.1.4, 5.1.4-beta; "5.x" matches any 5.*. Everything from the wildcard
+// segment on is unconstrained, so trailing segments in the client's version cannot make it miss.
+isolated function matchesWildcard(string clientVersion, string selector) returns boolean {
+    // Compare against the release core only: a pre-release or build suffix (5.1.4-beta) belongs to
+    // the same line as 5.1.4, and splitting it off keeps the segment comparison numeric.
+    string core = releaseCore(clientVersion);
+    string[] want = re `\.`.split(selector);
+    string[] have = re `\.`.split(core);
+    foreach int i in 0 ..< want.length() {
+        string segment = want[i].trim();
+        if segment == "x" || segment == "X" || segment == "*" {
+            return true; // this segment and everything after it is unconstrained
+        }
+        if i >= have.length() || have[i] != segment {
+            return false;
+        }
+    }
+    // No wildcard segment was reached, so the selector was an exact version after all.
+    return want.length() == have.length();
+}
+
+// The numeric core of a version: "5.1.4-beta.2+build" -> "5.1.4".
+isolated function releaseCore(string ver) returns string {
+    string core = ver.trim();
+    int? dash = core.indexOf("-");
+    if dash is int {
+        core = core.substring(0, dash);
+    }
+    int? plus = core.indexOf("+");
+    if plus is int {
+        core = core.substring(0, plus);
+    }
+    return core;
+}
+
+// The document that serves this client's line, or () when the index covers no line it belongs to.
+// First match wins; see IndexEntry for why the order is the contract.
+public isolated function selectManifest(SourceIndex index, string? clientVersion) returns string? {
+    foreach IndexEntry entry in index.entries {
+        if clientVersion is () {
+            // A client that reports no version (an old Squirrel feed request) can only be served by
+            // an entry that constrains nothing; anything else would be a guess about its line.
+            if entry.'match.trim() == "*" {
+                return entry.manifest;
+            }
+            continue;
+        }
+        if matchesSelector(clientVersion, entry.'match) {
+            return entry.manifest;
+        }
+    }
+    return ();
+}
+
 // A rollout gate the client cannot be trusted to apply to itself: it reports its own 0-99 bucket,
 // computed locally from a device id it never sends. A client that reports no bucket is held back
 // from a partial rollout rather than waved through, so an old or hand-made request cannot opt
