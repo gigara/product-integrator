@@ -14,21 +14,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Record model for the update manifest described in
-// docs/update-mechanism-design.md (§4.2). The records are intentionally OPEN
-// so that manifests can gain forward-compatible fields without breaking
-// validation on older server builds. The server serves the manifest bytes
-// verbatim (to preserve the detached signature); these types are used for
-// admin-publish validation, tests, and documentation of the contract.
+// Record model for the update source document described in
+// docs/update-mechanism-design.md (§3). The records are intentionally OPEN so a document can gain
+// forward-compatible fields without breaking validation on an older server build.
+//
+// The per-platform `Manifest` records that used to live here went with the endpoints that served
+// them: no client has fetched a manifest by path since the server began composing responses.
 
-// A detached-signature reference (cosign sign-blob output locations).
-// LEGACY: used only by the per-platform `Manifest` below, which the client no longer fetches.
-// New work belongs on `StatementRef`; this stays as-is so the retired fixtures still describe what
-// that endpoint actually served (keyless cosign, signature + signing certificate).
-public type SignatureRef record {
-    string sigUrl;
-    string certUrl;
-};
 
 // Where an artifact's signed statement and its detached signature live.
 //
@@ -45,13 +37,6 @@ public type StatementRef record {
     string sigUrl;
 };
 
-// A downloadable artifact with integrity metadata.
-public type Artifact record {
-    string url;
-    string sha256;
-    int sizeBytes;
-    SignatureRef signature?;
-};
 
 // Client-side staged-rollout control. The client decides visibility with
 // sha1(deviceId + componentId + version) mod 100 < percentage; the server
@@ -65,51 +50,9 @@ public type SquirrelPayload record {
     string url;
 };
 
-// The core-app update entry (full installer per platform/arch). `commit` is the
-// product-integrator root sha the build was produced from — the Squirrel endpoint
-// compares the mac client's commit against it. `squirrel` is present on darwin
-// manifests only.
-public type AppUpdate record {
-    string 'version;
-    string minAutoUpdateFromVersion?;
-    Artifact installer;
-    string releaseNotesUrl?;
-    Rollout rollout?;
-    string 'commit?;
-    SquirrelPayload squirrel?;
-};
 
-// An independently updatable component (extension | runtime | app).
-public type Component record {
-    string id;
-    string kind;
-    string 'version;
-    Artifact artifact;
-    // component-id (or "app") -> semver range that must be satisfied.
-    map<string> requires?;
-    string releaseNotesUrl?;
-    Rollout rollout?;
-};
 
-// The tested release train the client offers as a single bundle by default.
-public type RecommendedSet record {
-    string name;
-    map<string> members;
-};
 
-// The full manifest served per (channel, platform, arch).
-public type Manifest record {
-    int schemaVersion;
-    string channel;
-    string platform;
-    string arch;
-    int sequence;
-    string publishedAt;
-    string expiresAt?;
-    AppUpdate app?;
-    Component[] components;
-    RecommendedSet recommendedSet?;
-};
 
 // --- source document (schemaVersion 2) -------------------------------------------------
 // ONE published document per channel describes every platform/arch. The server reads it and

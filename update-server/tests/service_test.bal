@@ -34,71 +34,6 @@ function testHealthz() returns error? {
 }
 
 @test:Config {}
-function testGetManifest() returns error? {
-    http:Response res = check testClient->get("/api/v1/updates/stable/darwin/arm64/manifest.json");
-    test:assertEquals(res.statusCode, 200);
-    test:assertEquals(check res.getHeader("Content-Type"), "application/json");
-
-    string etag = check res.getHeader("ETag");
-    test:assertTrue(etag.length() > 2, "ETag should be present");
-
-    json payload = check res.getJsonPayload();
-    Manifest manifest = check payload.cloneWithType(Manifest);
-    test:assertEquals(manifest.channel, "stable");
-    test:assertEquals(manifest.platform, "darwin");
-    test:assertEquals(manifest.arch, "arm64");
-    test:assertEquals(manifest.components.length(), 4);
-    test:assertTrue(manifest.recommendedSet !is ());
-}
-
-@test:Config {}
-function testConditionalGetReturns304() returns error? {
-    http:Response first = check testClient->get("/api/v1/updates/stable/darwin/arm64/manifest.json");
-    string etag = check first.getHeader("ETag");
-
-    http:Response second = check testClient->get(
-        "/api/v1/updates/stable/darwin/arm64/manifest.json", {"If-None-Match": etag});
-    test:assertEquals(second.statusCode, 304);
-}
-
-@test:Config {}
-function testGetManifestWithAppVersion() returns error? {
-    http:Response res = check testClient->get(
-        "/api/v1/updates/stable/darwin/arm64/manifest.json?appVersion=5.0.0.1");
-    test:assertEquals(res.statusCode, 200);
-}
-
-@test:Config {}
-function testSignatureAndCertServed() returns error? {
-    http:Response sig = check testClient->get("/api/v1/updates/stable/darwin/arm64/manifest.json.sig");
-    test:assertEquals(sig.statusCode, 200);
-    test:assertEquals(check sig.getHeader("Content-Type"), "application/octet-stream");
-
-    http:Response pem = check testClient->get("/api/v1/updates/stable/darwin/arm64/manifest.json.pem");
-    test:assertEquals(pem.statusCode, 200);
-    test:assertEquals(check pem.getHeader("Content-Type"), "application/x-pem-file");
-}
-
-@test:Config {}
-function testInvalidPlatformRejected() returns error? {
-    http:Response res = check testClient->get("/api/v1/updates/stable/solaris/arm64/manifest.json");
-    test:assertEquals(res.statusCode, 400);
-}
-
-@test:Config {}
-function testInvalidChannelRejected() returns error? {
-    http:Response res = check testClient->get("/api/v1/updates/nightly/darwin/arm64/manifest.json");
-    test:assertEquals(res.statusCode, 400);
-}
-
-@test:Config {}
-function testMissingManifestReturns404() returns error? {
-    // Valid path segments, but no manifest published for win32/arm64.
-    http:Response res = check testClient->get("/api/v1/updates/stable/win32/arm64/manifest.json");
-    test:assertEquals(res.statusCode, 404);
-}
-
-@test:Config {}
 function testChannelsListing() returns error? {
     http:Response res = check testClient->get("/api/v1/channels");
     test:assertEquals(res.statusCode, 200);
@@ -109,10 +44,11 @@ function testChannelsListing() returns error? {
 
 @test:Config {}
 function testPublishDisabledByDefault() returns error? {
-    // adminToken is empty in tests, so publish must be disabled (404).
+    // adminToken is empty in tests, so publish must be disabled — and 404, not 401, so an
+    // unconfigured deployment does not advertise that the endpoint exists at all.
     http:Request req = new;
-    req.setJsonPayload({schemaVersion: 1});
-    http:Response res = check testClient->put("/api/v1/updates/stable/darwin/arm64/manifest.json", req);
+    req.setJsonPayload({schemaVersion: 2});
+    http:Response res = check testClient->put("/api/v1/updates/stable/source.json", req);
     test:assertEquals(res.statusCode, 404);
 }
 
@@ -142,8 +78,12 @@ function testScopeIsServedWhenNotRevoked() returns error? {
     // a kill-switch that accidentally withholds everything would be a worse outage than the release
     // it was meant to stop.
     test:assertFalse(isRevoked("stable", "darwin", "arm64"));
-    http:Response served = check testClient->get("/api/v1/updates/stable/darwin/arm64/manifest.json");
-    test:assertEquals(served.statusCode, 200);
+    http:Request req = new;
+    req.setJsonPayload({channel: "stable", platform: "darwin", arch: "arm64", appVersion: "5.1.0", components: {}});
+    http:Response served = check testClient->post("/api/v1/updates", req);
+    // 204 because the stable fixture publishes nothing, not because anything was withheld — a
+    // revoked scope would take the same path, so the matching rule is asserted separately above.
+    test:assertEquals(served.statusCode, 204);
 }
 
 @test:Config {}
@@ -169,7 +109,7 @@ function testAdminEndpointsDisabledWithoutToken() returns error? {
 
 @test:Config {}
 function testSquirrelFeedWithoutEmbeddedDataReturns204() returns error? {
-    // The stable fixture manifest has no app.commit/app.squirrel → treated as current.
+    // The stable fixture document publishes no apps at all → nothing to offer.
     http:Response res = check testClient->get("/api/update/darwin-arm64/stable/0000000000000000000000000000000000000000");
     test:assertEquals(res.statusCode, 204);
 }
@@ -295,9 +235,11 @@ function testSquirrelFeedWithholdsCrossMinorUpdate() returns error? {
 function testReadEndpointsOpenWhenNoClientTokensConfigured() returns error? {
     // The suite runs with clientTokens = [] (the default), which must stay open — every client
     // built before this feature sends no Authorization header at all.
-    http:Response manifest = check testClient->get("/api/v1/updates/stable/win32/x64/manifest.json");
-    test:assertTrue(manifest.statusCode == 200 || manifest.statusCode == 404,
-        string `expected an unauthenticated read to be served, got ${manifest.statusCode}`);
+    http:Request req = new;
+    req.setJsonPayload({channel: "stable", platform: "win32", arch: "x64", appVersion: "5.1.0", components: {}});
+    http:Response updates = check testClient->post("/api/v1/updates", req);
+    test:assertTrue(updates.statusCode != 401,
+        string `expected an unauthenticated update check to be served, got ${updates.statusCode}`);
     http:Response squirrel = check testClient->get("/api/update/darwin-arm64/stable/somesha");
     test:assertTrue(squirrel.statusCode != 401, "squirrel feed must not require auth when unconfigured");
 }

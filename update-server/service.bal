@@ -63,40 +63,6 @@ service / on updateListener {
         }
     }
 
-    // Serves a manifest or its companion signature/certificate.
-    // `appVersion` is accepted for telemetry/logging; the full manifest is
-    // always returned (200) so this stays compatible with static hosting.
-    resource function get api/v1/updates/[string channel]/[string platform]/[string arch]/[string fileName](
-            http:Request request, string? appVersion) returns http:Response {
-        http:Response? denied = clientAuthGuard(request);
-        if denied is http:Response {
-            return denied;
-        }
-        string? ifNoneMatch = ();
-        string|http:HeaderNotFoundError header = request.getHeader("If-None-Match");
-        if header is string {
-            ifNoneMatch = header;
-        }
-        if appVersion is string {
-            log:printInfo(string `update check channel=${channel} platform=${platform} arch=${arch} appVersion=${appVersion}`);
-        }
-        // Dynamic features (Phase 3) apply to the manifest itself, not the signature/cert.
-        if fileName == "manifest.json" {
-            recordCheck(channel, platform, arch, appVersion);
-            // Kill-switch: withhold the manifest for a revoked scope so NEW clients receive
-            // no update (204). The manifest bytes are never rewritten — the signature is intact
-            // for every client that does receive it.
-            if isRevoked(channel, platform, arch) {
-                log:printInfo(string `manifest withheld (revoked) channel=${channel} platform=${platform} arch=${arch}`);
-                http:Response revoked = new;
-                revoked.statusCode = 204;
-                revoked.setHeader("Cache-Control", "no-store");
-                return revoked;
-            }
-        }
-        return buildFileResponse(channel, platform, arch, fileName, ifNoneMatch);
-    }
-
     // Squirrel.Mac core-app update feed (macOS). Electron's autoUpdater polls
     //   GET /api/update/{darwin|darwin-arm64}/{quality}/{commit}
     // and expects 200 {url, ...} when a newer build exists, or 204 when current.
@@ -269,68 +235,8 @@ service / on updateListener {
             return jsonResponse(400, {'error: e.message()});
         }
     }
-
-    resource function put api/v1/updates/[string channel]/[string platform]/[string arch]/[string fileName](
-            http:Request request) returns http:Response {
-        http:Response? denied = authGuard(request);
-        if denied is http:Response {
-            return denied;
-        }
-        do {
-            byte[] body = check request.getBinaryPayload();
-            if fileName == "manifest.json" {
-                string text = check string:fromBytes(body);
-                json parsed = check text.fromJsonString();
-                // Validate the manifest shape before persisting it.
-                Manifest _ = check parsed.cloneWithType(Manifest);
-            }
-            check writeStoredArtifact(channel, platform, arch, fileName, body);
-            return jsonResponse(201, {
-                status: "published",
-                path: string `${channel}/${platform}/${arch}/${fileName}`
-            });
-        } on fail error e {
-            log:printError("publish failed", e);
-            return jsonResponse(400, {'error: e.message()});
-        }
-    }
 }
 
-// Builds the response for a manifest/signature/certificate request, including
-// ETag-based conditional GET (304) handling.
-function buildFileResponse(string channel, string platform, string arch, string fileName, string? ifNoneMatch)
-        returns http:Response {
-    // Validate up front so a bad segment is a 400, distinct from store failures (500).
-    error? invalid = validateSegments(channel, platform, arch, fileName);
-    if invalid is error {
-        return jsonResponse(400, {'error: invalid.message()});
-    }
-
-    [byte[], string]|error? artifact = readStoredArtifact(channel, platform, arch, fileName);
-    if artifact is error {
-        log:printError("failed to read artifact", artifact);
-        return jsonResponse(500, {'error: "internal error"});
-    }
-    if artifact is () {
-        return jsonResponse(404, {'error: "manifest not found"});
-    }
-
-    byte[] content = artifact[0];
-    string etag = artifact[1];
-
-    http:Response res = new;
-    res.setHeader("ETag", etag);
-    res.setHeader("Cache-Control", string `public, max-age=${cacheMaxAge}`);
-
-    if ifNoneMatch is string && ifNoneMatch == etag {
-        res.statusCode = 304;
-        return res;
-    }
-
-    res.statusCode = 200;
-    res.setBinaryPayload(content, contentTypeFor(fileName));
-    return res;
-}
 
 // Admin authorization guard. Returns a denial response (404 when the admin API is disabled,
 // 401 on a bad/absent token) or () when the caller is authorized. Tokens are compared via

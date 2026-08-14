@@ -1,0 +1,8 @@
+time=2026-08-14T20:02:51.667+05:30 level=INFO module=wso2/update_server message="published stable/source-5.1.5.json (907 bytes)"
+time=2026-08-14T20:02:51.709+05:30 level=INFO module=wso2/update_server message="published stable/source-5.3.0.json (907 bytes)"
+time=2026-08-14T20:02:51.731+05:30 level=INFO module=wso2/update_server message="published stable/index.json (193 bytes)"
+time=2026-08-14T20:02:51.779+05:30 level=WARN module=wso2/update_server message="source document signature verification disabled (no sourcePublicKey configured)"
+time=2026-08-14T20:02:51.799+05:30 level=INFO module=wso2/update_server message="offering 1 component(s) app=yes to darwin-arm64 appVersion=5.1.4 channel=stable"
+time=2026-08-14T20:02:51.822+05:30 level=WARN module=wso2/update_server message="source document signature verification disabled (no sourcePublicKey configured)"
+time=2026-08-14T20:02:51.825+05:30 level=INFO module=wso2/update_server message="squirrel update offered quality=stable arch=arm64 version=5.1.5 to commit=old"
+error: no matching resource found for path : /api/v1/updates/stable/darwin/arm64/manifest.json , method : GET

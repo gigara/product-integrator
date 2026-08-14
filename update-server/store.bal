@@ -14,18 +14,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Filesystem-backed artifact store. Resolves, reads, and writes manifest
-// artifacts under the configured data directory with strict path validation.
+// Storage for the update source documents: the per-release documents CI publishes and the index
+// that selects between them. Reads and writes go to S3 when a bucket is configured, otherwise to
+// the local data directory. File names are validated before they are joined to any path.
 
 import ballerina/crypto;
 import ballerina/file;
 import ballerina/io;
-
-// Fixed allowlists for the path segments that are not operator-configured.
-// Kept in sync with the platforms/arches CI publishes for.
-final readonly & string[] ALLOWED_PLATFORMS = ["darwin", "linux", "win32"];
-final readonly & string[] ALLOWED_ARCHS = ["x64", "arm64"];
-final readonly & string[] ALLOWED_FILES = ["manifest.json", "manifest.json.sig", "manifest.json.pem"];
 
 // Files the source layout may contain, as a pattern rather than a fixed list: each release
 // publishes its own immutable document (source-5.2.1.json) alongside the index that selects it,
@@ -45,56 +40,11 @@ isolated function isSourceFile(string fileName) returns boolean {
     return re `^(index|source|source-[A-Za-z0-9][A-Za-z0-9._+-]{0,63})\.json(\.sig)?$`.isFullMatch(fileName);
 }
 
-final readonly & map<string> CONTENT_TYPES = {
-    "manifest.json": "application/json",
-    "manifest.json.sig": "application/octet-stream",
-    "manifest.json.pem": "application/x-pem-file"
-};
 
 final readonly & string[] HEX = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"];
 
-// Validates every client-supplied path segment against an allowlist. Returns an
-// error (surfaced as 400) for any segment that is not explicitly permitted, so
-// path/key traversal is impossible in both the local and the S3 store.
-function validateSegments(string channel, string platform, string arch, string fileName) returns error? {
-    if allowedChannels.indexOf(channel) !is int {
-        return error(string `unsupported channel: ${channel}`);
-    }
-    if ALLOWED_PLATFORMS.indexOf(platform) !is int {
-        return error(string `unsupported platform: ${platform}`);
-    }
-    if ALLOWED_ARCHS.indexOf(arch) !is int {
-        return error(string `unsupported arch: ${arch}`);
-    }
-    if ALLOWED_FILES.indexOf(fileName) !is int {
-        return error(string `unsupported file: ${fileName}`);
-    }
-    return ();
-}
-
-// Resolves the on-disk path for a request (local mode).
-function resolvePath(string channel, string platform, string arch, string fileName) returns string|error {
-    check validateSegments(channel, platform, arch, fileName);
-    return file:joinPath(dataDir, "api", "v1", "updates", channel, platform, arch, fileName);
-}
-
-// Store-agnostic read: validates the segments, then reads from S3 (when s3Bucket is
-// configured) or the local data directory. Returns () when the artifact is absent.
-function readStoredArtifact(string channel, string platform, string arch, string fileName)
-        returns [byte[], string]|error? {
-    check validateSegments(channel, platform, arch, fileName);
-    if s3Bucket != "" {
-        return readS3Artifact(string `manifests/${channel}/${platform}/${arch}/${fileName}`);
-    }
-    string path = check resolvePath(channel, platform, arch, fileName);
-    return readArtifact(path);
-}
-
-// Reads the single source document for a channel — the one file CI publishes and the server
-// composes every response from. Clients never fetch it.
-//
-// Kept separate from readStoredArtifact() because its path has no platform/arch: the whole point
-// of the source document is that one file covers every target.
+// Reads one source-layout file for a channel — a release's document, its signature, or the index.
+// The server composes every response from these; clients never fetch them.
 function readSourceManifest(string channel, string fileName) returns [byte[], string]|error? {
     if allowedChannels.indexOf(channel) !is int {
         return error(string `unsupported channel: ${channel}`);
@@ -124,17 +74,6 @@ function writeSourceManifest(string channel, string fileName, byte[] content) re
     return writeArtifact(path, content);
 }
 
-// Store-agnostic write (admin publish): S3 write-through or the local data directory.
-function writeStoredArtifact(string channel, string platform, string arch, string fileName, byte[] content)
-        returns error? {
-    check validateSegments(channel, platform, arch, fileName);
-    if s3Bucket != "" {
-        return writeS3Artifact(string `manifests/${channel}/${platform}/${arch}/${fileName}`, content);
-    }
-    string path = check resolvePath(channel, platform, arch, fileName);
-    return writeArtifact(path, content);
-}
-
 // Reads an artifact. Returns () when the file does not exist (surfaced as 404),
 // an error on real I/O failures, or a [bytes, etag] tuple on success.
 function readArtifact(string path) returns [byte[], string]|error? {
@@ -155,11 +94,6 @@ function writeArtifact(string path, byte[] content) returns error? {
         check file:createDir(parent, file:RECURSIVE);
     }
     check io:fileWriteBytes(path, content);
-}
-
-// Returns the MIME type for a known artifact file name.
-function contentTypeFor(string fileName) returns string {
-    return CONTENT_TYPES[fileName] ?: "application/octet-stream";
 }
 
 // Lowercase hex encoding of the SHA-256 digest, used as the ETag value.

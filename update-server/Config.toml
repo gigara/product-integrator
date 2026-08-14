@@ -1,0 +1,4 @@
+port = 9611
+dataDir = "localdata"
+adminToken = "test-admin-token"
+sourcePublicKey = ""
