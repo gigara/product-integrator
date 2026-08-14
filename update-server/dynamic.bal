@@ -20,8 +20,6 @@
 // signature stays valid). The kill-switch simply withholds the manifest (HTTP 204 = "no update
 // available", which the client already treats as up-to-date) for revoked scopes.
 
-import ballerina/file;
-import ballerina/io;
 import ballerina/log;
 
 // ---------------------------------------------------------------------------
@@ -29,8 +27,10 @@ import ballerina/log;
 // ---------------------------------------------------------------------------
 
 // A revoked scope. `platform`/`arch` of "*" match any, so an operator can revoke a
-// single (channel, platform, arch), a whole platform, or an entire channel. The set is
-// persisted as a JSON array at <dataDir>/revocations.json so it survives restarts.
+// single (channel, platform, arch), a whole platform, or an entire channel. The set is persisted as
+// a JSON array through the shared control store — `manifests/control/revocations.json` in the
+// bucket, or <dataDir>/revocations.json for a single-process local deployment — so it survives
+// restarts AND is seen by every replica.
 public type Revocation record {
     string channel;
     string platform = "*";
@@ -45,28 +45,28 @@ public type RevocationRequest record {
     boolean revoked;
 };
 
-function revocationsPath() returns string|error => file:joinPath(dataDir, "revocations.json");
+const REVOCATIONS_FILE = "revocations.json";
 
-// Reads the persisted revocation list (empty when the file is absent).
+// Reads the persisted revocation list (empty when absent).
+//
+// Goes through the shared control store rather than straight to disk: on a multi-replica deployment
+// a local file would make a kill-switch apply only to the replica that served the POST setting it.
 function loadRevocations() returns Revocation[]|error {
-    string path = check revocationsPath();
-    boolean exists = check file:test(path, file:EXISTS);
-    if !exists {
+    [byte[], string]|error? stored = readControlFile(REVOCATIONS_FILE);
+    if stored is error {
+        return stored;
+    }
+    if stored is () {
         return [];
     }
-    json data = check io:fileReadJson(path);
+    string text = check string:fromBytes(stored[0]);
+    json data = check text.fromJsonString();
     return data.cloneWithType();
 }
 
-// Persists the revocation list, creating the data directory if needed.
+// Persists the revocation list.
 function saveRevocations(Revocation[] revocations) returns error? {
-    string path = check revocationsPath();
-    string parent = check file:parentPath(path);
-    boolean parentExists = check file:test(parent, file:EXISTS);
-    if !parentExists {
-        check file:createDir(parent, file:RECURSIVE);
-    }
-    check io:fileWriteJson(path, revocations.toJson());
+    return writeControlFile(REVOCATIONS_FILE, revocations.toJsonString().toBytes());
 }
 
 // True when the given (channel, platform, arch) is currently revoked. A read failure is

@@ -207,7 +207,10 @@ function testVersionComparisonAndRanges() {
     test:assertEquals(compareVersions("2201.13.5", "2201.13.4"), 1);
     test:assertEquals(compareVersions("5.0.0.2", "5.0.0.1"), 1);
     test:assertEquals(compareVersions("5.1.2", "5.1.2"), 0);
-    test:assertEquals(compareVersions("5.1.2-testalpha1", "5.1.2"), 0); // suffixes deliberately ignored, as on the client
+    // A pre-release ranks below its release. This previously asserted 0 — "suffixes deliberately
+    // ignored" — which is what stranded pre-release clients: the release never compared as newer,
+    // so it was never offered. See testVersionComparisonMatchesTheClient for the full contract.
+    test:assertEquals(compareVersions("5.1.2-testalpha1", "5.1.2"), -1);
     test:assertTrue(satisfiesRange("5.1.5", ">=5.1.0 <5.2.0"));
     test:assertFalse(satisfiesRange("5.2.0", ">=5.1.0 <5.2.0"));
     test:assertTrue(satisfiesRange("3.0.2", ">=3.0.2"));
@@ -419,4 +422,36 @@ function testLineOverrideMatchingIsChannelScopedAndOrdered() {
     // A client that reports no version is only claimed by an unconstrained entry.
     test:assertEquals(pickOverride(configured, "stable", ()), ());
     test:assertEquals(pickOverride([{clients: "*", manifest: "all.json"}], "stable", ()), "all.json");
+}
+
+// Parity with the CLIENT's compareVersions (wso2ComponentsManifest.ts). Every expectation here was
+// produced by running the vector through the real client implementation — if the two ever diverge,
+// the server offers updates the client refuses, and a user sees a check that finds something and
+// then does nothing. Keep both sides in step or delete neither.
+@test:Config {}
+function testVersionComparisonMatchesTheClient() {
+    [string, string, int][] vectors = [
+        ["5.1.3-testalpha1", "5.1.3", -1],          // a pre-release ranks below its release
+        ["5.1.3", "5.1.3-testalpha1", 1],
+        ["5.1.3-testalpha1", "5.1.3-testalpha1", 0],
+        ["5.1.3-testalpha1", "5.1.3-testalpha2", -1],
+        ["2201.13.6-alpha2", "2201.13.6", -1],
+        ["2201.13.6-Alpha", "2201.13.6-alpha2", -1], // ASCII order: uppercase sorts first
+        ["2201.13.4", "2201.13.5", -1],
+        ["5.0.0.1", "5.0.0.2", -1],                  // 4-part versions
+        ["5.0.0.1", "5.0.0", 1],
+        ["5.12.4", "5.13.26081016", -1],
+        ["1.0.0-alpha", "1.0.0-alpha.1", -1],        // fewer identifiers rank lower
+        ["1.0.0-alpha.1", "1.0.0-alpha.beta", -1],   // numeric ranks below alphanumeric
+        ["1.0.0-beta", "1.0.0-beta.2", -1],
+        ["1.0.0-beta.2", "1.0.0-beta.11", -1],       // numeric, not lexical: 2 < 11
+        ["1.0.0-rc.1", "1.0.0", -1],
+        ["5.1.3+build9", "5.1.3", 0],                // build metadata is ignored
+        ["5.1.0", "5.1", 0]                          // missing segments are zero
+    ];
+    foreach [string, string, int] [a, b, want] in vectors {
+        test:assertEquals(compareVersions(a, b), want, string `compareVersions(${a}, ${b})`);
+        // Antisymmetry: whichever way round it is asked, the answer must invert.
+        test:assertEquals(compareVersions(b, a), -want, string `compareVersions(${b}, ${a})`);
+    }
 }

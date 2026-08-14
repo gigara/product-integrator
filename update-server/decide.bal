@@ -21,10 +21,18 @@
 // withholds or mis-offers an update, it can never make a client install something unsigned.
 
 // Numeric, part-wise version comparison. Mirrors the client's compareVersions so both sides agree
-// on what "newer" means, including 4-part versions (5.0.0.2).
+// on what "newer" means, including 4-part versions (5.0.0.2) and pre-releases.
+//
+// A pre-release ranks BELOW the release it precedes (semver §11.3): 5.1.3-testalpha1 < 5.1.3.
+// Treating them as equal strands anyone on a pre-release, because the release that supersedes it
+// never compares as newer and so is never offered. This MUST stay identical to the client's
+// implementation in wso2ComponentsManifest.ts — if the two disagree, the server offers updates the
+// client then refuses, and the user sees a check that finds something and does nothing.
 isolated function compareVersions(string a, string b) returns int {
-    string[] pa = re `\.`.split(a);
-    string[] pb = re `\.`.split(b);
+    [string, string] [coreA, preA] = splitVersion(a);
+    [string, string] [coreB, preB] = splitVersion(b);
+    string[] pa = re `\.`.split(coreA);
+    string[] pb = re `\.`.split(coreB);
     int len = pa.length() > pb.length() ? pa.length() : pb.length();
     foreach int i in 0 ..< len {
         int na = i < pa.length() ? leadingInt(pa[i]) : 0;
@@ -36,7 +44,79 @@ isolated function compareVersions(string a, string b) returns int {
             return -1;
         }
     }
+    if preA == "" && preB == "" {
+        return 0;
+    }
+    // Same release core, so whichever carries no pre-release is the finished one and ranks above.
+    if preA == "" {
+        return 1;
+    }
+    if preB == "" {
+        return -1;
+    }
+    return comparePreRelease(preA, preB);
+}
+
+// Splits "5.1.3-alpha.2+build" into its release core and pre-release; build metadata is dropped.
+isolated function splitVersion(string version) returns [string, string] {
+    string trimmed = version.trim();
+    int? plus = trimmed.indexOf("+");
+    string withoutBuild = plus is int ? trimmed.substring(0, plus) : trimmed;
+    int? dash = withoutBuild.indexOf("-");
+    if dash is int {
+        return [withoutBuild.substring(0, dash), withoutBuild.substring(dash + 1)];
+    }
+    return [withoutBuild, ""];
+}
+
+// Dot-separated pre-release identifiers: numeric compare numerically and rank below alphanumeric.
+isolated function comparePreRelease(string a, string b) returns int {
+    string[] ia = re `\.`.split(a);
+    string[] ib = re `\.`.split(b);
+    int len = ia.length() > ib.length() ? ia.length() : ib.length();
+    foreach int i in 0 ..< len {
+        if i >= ia.length() {
+            return -1; // a smaller set of identifiers ranks lower: alpha < alpha.1
+        }
+        if i >= ib.length() {
+            return 1;
+        }
+        int? nx = allDigits(ia[i]) ? intOrZero(ia[i]) : ();
+        int? ny = allDigits(ib[i]) ? intOrZero(ib[i]) : ();
+        if nx is int && ny is int {
+            if nx != ny {
+                return nx < ny ? -1 : 1;
+            }
+            continue;
+        }
+        if nx is int {
+            return -1;
+        }
+        if ny is int {
+            return 1;
+        }
+        if ia[i] != ib[i] {
+            return ia[i] < ib[i] ? -1 : 1;
+        }
+    }
     return 0;
+}
+
+isolated function allDigits(string s) returns boolean {
+    if s.length() == 0 {
+        return false;
+    }
+    foreach string:Char ch in s {
+        if ch < "0" || ch > "9" {
+            return false;
+        }
+    }
+    return true;
+}
+
+isolated function intOrZero(string s) returns int {
+    int|error parsed = int:fromString(s);
+    return parsed is int ? parsed : 0;
 }
 
 // Leading digits of a version part; "2-testalpha1" -> 2, "abc" -> 0. Matches the client's parseInt

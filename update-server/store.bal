@@ -124,6 +124,40 @@ function writeSourceManifest(string channel, string fileName, byte[] content) re
     return writeArtifact(path, content);
 }
 
+// Operator state that must be visible to EVERY replica, not just the one that served the write.
+//
+// The kill-switch lives here. A revocation persisted to a local file applies only to the replica
+// that happened to receive the POST, so on a multi-replica deployment "stop shipping this update"
+// silently becomes "stop shipping it to roughly one in N clients" — the failure mode that matters
+// least when things are fine and most when they are not. In S3 mode this rides the same bucket the
+// documents do (under the private manifests/ prefix); locally it stays a file, which is correct
+// because a local deployment is one process.
+function readControlFile(string fileName) returns [byte[], string]|error? {
+    if !isControlFile(fileName) {
+        return error(string `unsupported control file: ${fileName}`);
+    }
+    if s3Bucket != "" {
+        return readS3Artifact(string `manifests/control/${fileName}`);
+    }
+    string path = check file:joinPath(dataDir, fileName);
+    return readArtifact(path);
+}
+
+function writeControlFile(string fileName, byte[] content) returns error? {
+    if !isControlFile(fileName) {
+        return error(string `unsupported control file: ${fileName}`);
+    }
+    if s3Bucket != "" {
+        return writeS3Artifact(string `manifests/control/${fileName}`, content);
+    }
+    string path = check file:joinPath(dataDir, fileName);
+    return writeArtifact(path, content);
+}
+
+isolated function isControlFile(string fileName) returns boolean {
+    return fileName == "revocations.json";
+}
+
 // Store-agnostic write (admin publish): S3 write-through or the local data directory.
 function writeStoredArtifact(string channel, string platform, string arch, string fileName, byte[] content)
         returns error? {
