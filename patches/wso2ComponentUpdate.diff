@@ -3147,7 +3147,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/update/electron-main/update
 ===================================================================
 --- product-integrator.orig/lib/vscode/src/vs/platform/update/electron-main/updateService.darwin.ts
 +++ product-integrator/lib/vscode/src/vs/platform/update/electron-main/updateService.darwin.ts
-@@ -91,9 +91,25 @@ export class DarwinUpdateService extends
+@@ -91,9 +91,46 @@ export class DarwinUpdateService extends
  		this.setState(State.Idle(UpdateType.Archive, message));
  	}
  
@@ -3167,10 +3167,31 @@ Index: product-integrator/lib/vscode/src/vs/platform/update/electron-main/update
 +		return withVersion.toString();
 +	}
 +
++	/**
++	 * The channel this client should be served from.
++	 *
++	 * `quality` is baked into product.json at build time and is always "stable", so on its own it
++	 * would pin every client's CORE-APP updates to the stable channel while `wso2.updates.channel`
++	 * moved its COMPONENT updates elsewhere — a user who opted into insider would get insider
++	 * components on top of a stable app, which is not what choosing a channel means. The update
++	 * server treats this path segment as the channel, so the user's choice belongs here.
++	 *
++	 * `quality` still decides whether updates run at all (it is undefined when policy or
++	 * `update.mode` disables them), so this only redirects a check that was already going to happen.
++	 */
++	private feedQuality(quality: string): string {
++		// Only an EXPLICIT choice redirects the feed. getValue() would hand back the registered
++		// default ("stable") for a user who never chose anything, which on an insider-quality build
++		// would silently drag its core-app updates back onto the stable channel.
++		const inspected = this.configurationService.inspect<string>('wso2.updates.channel');
++		const chosen = inspected.applicationValue ?? inspected.userValue;
++		return chosen && chosen.length > 0 ? chosen : quality;
++	}
++
  	protected buildUpdateFeedUrl(quality: string, commit: string, options?: IUpdateURLOptions): string | undefined {
  		const assetID = this.productService.darwinUniversalAssetId ?? (process.arch === 'x64' ? 'darwin' : 'darwin-arm64');
 -		const url = createUpdateURL(this.productService.updateUrl!, assetID, quality, commit, options);
-+		const url = this.withProductVersion(createUpdateURL(this.productService.updateUrl!, assetID, quality, commit, options));
++		const url = this.withProductVersion(createUpdateURL(this.productService.updateUrl!, assetID, this.feedQuality(quality), commit, options));
  		const headers = getUpdateRequestHeaders(this.productService.version);
  		try {
  			this.logService.trace('update#buildUpdateFeedUrl - setting feed URL for Electron autoUpdater', { url, assetID, quality, commit, headers });
