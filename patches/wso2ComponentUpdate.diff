@@ -497,7 +497,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/wso2ComponentUpdateService.ts
-@@ -0,0 +1,1246 @@
+@@ -0,0 +1,1254 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -883,6 +883,14 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +			// Already downloaded and staged for the next restart — don't re-offer/re-download.
 +			const pendingVersion = local?.components[component.id]?.pending?.version;
 +			if (pendingVersion && compareVersions(pendingVersion, component.version) >= 0) {
++				continue;
++			}
++			// This exact version already stopped the app from booting and was auto-reverted. The
++			// server has no way to know that — the failure is local to this machine — so refusing it
++			// here is what stops an endless revert/re-download loop. A later version is still
++			// offered, since that is how a fix arrives.
++			if (local?.components[component.id]?.failed?.some(f => f.version === component.version)) {
++				this.logService.info(`[wso2Update] ignoring ${component.id}@${component.version}: previously auto-reverted after failing to boot`);
 +				continue;
 +			}
 +			if (!this.requiresSatisfied(component, local, projected)) {
@@ -1748,7 +1756,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2Compone
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2ComponentsManifest.ts
-@@ -0,0 +1,400 @@
+@@ -0,0 +1,492 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -1794,6 +1802,22 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2Compone
 +	active?: ILocalComponentVersion | null;
 +	previous?: ILocalComponentVersion | null;
 +	pending?: ILocalComponentVersion | null;
++	/**
++	 * Versions auto-reverted after they kept the app from booting. Recorded so the same version is
++	 * not offered, downloaded and activated again on the very next check — which, since the revert
++	 * also drops it out of the garbage collector's keep-set, would mean re-downloading hundreds of
++	 * megabytes to crash-loop with it a second time.
++	 *
++	 * Only the exact version is refused; a later one is still offered, because a fix ships as a new
++	 * version and blocking the whole component would strand the user on the bundled copy forever.
++	 */
++	failed?: IFailedComponentVersion[];
++}
++
++export interface IFailedComponentVersion {
++	version: string;
++	/** ISO timestamp of the revert, for support diagnosis. */
++	at: string;
 +}
 +
 +export interface ILocalComponentsManifest {
@@ -1979,8 +2003,19 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2Compone
 +				? (path.isAbsolute(prev.path) ? prev.path : path.join(dataFolderHome, prev.path))
 +				: undefined;
 +			entry.active = (prevPath && fs.existsSync(prevPath)) ? { ...prev!, healthy: true } : null;
++			// Remember what failed. Without this the next check offers the same version straight
++			// back, re-downloads it, and the machine crash-loops again — and because the revert
++			// leaves `active` null with `previous` often unset, the garbage collector has already
++			// deleted the directory, so it is a full re-download every time.
++			if (active.version) {
++				const failed = entry.failed ?? [];
++				if (!failed.some(f => f.version === active.version)) {
++					failed.push({ version: active.version, at: new Date().toISOString() });
++				}
++				entry.failed = failed;
++			}
 +			reverted.push(id);
-+			log?.(`Auto-reverted ${id}@${active.version} after ${attempts - 1} unhealthy boot(s)`);
++			log?.(`Auto-reverted ${id}@${active.version} after ${attempts - 1} unhealthy boot(s); it will not be offered again`);
 +		} else {
 +			entry.active = { ...active, bootCount: attempts };
 +			log?.(`Component ${id}@${active.version} unhealthy boot attempt ${attempts}`);
@@ -2130,12 +2165,23 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2Compone
 +}
 +
 +/**
-+ * Compares two dotted-numeric version strings (e.g. `2201.13.4`, `5.0.0.1`).
-+ * Returns 1 if a > b, -1 if a < b, 0 if equal. Non-numeric segments compare as 0.
++ * Compares two version strings (e.g. `2201.13.4`, `5.0.0.1`, `5.1.3-testalpha1`).
++ * Returns 1 if a > b, -1 if a < b, 0 if equal. Non-numeric release segments compare as 0.
++ *
++ * A pre-release ranks BELOW the release it precedes, per semver §11.3: `5.1.3-testalpha1` < `5.1.3`.
++ * Treating them as equal — which is what comparing only the leading digits of each segment did —
++ * strands anyone on a pre-release build: the release that supersedes it never compares as newer, so
++ * it is never offered, permanently. Our own test builds are pre-releases, so this is not a corner
++ * case.
++ *
++ * The update server mirrors this exactly (decide.bal). Both sides MUST agree on what "newer" means
++ * or the server offers an update the client then refuses.
 + */
 +export function compareVersions(a: string, b: string): number {
-+	const pa = a.split('.');
-+	const pb = b.split('.');
++	const [coreA, preA] = splitVersion(a);
++	const [coreB, preB] = splitVersion(b);
++	const pa = coreA.split('.');
++	const pb = coreB.split('.');
 +	const len = Math.max(pa.length, pb.length);
 +	for (let i = 0; i < len; i++) {
 +		const na = parseInt(pa[i] ?? '0', 10) || 0;
@@ -2145,6 +2191,60 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2Compone
 +		}
 +		if (na < nb) {
 +			return -1;
++		}
++	}
++	if (!preA && !preB) {
++		return 0;
++	}
++	// Same release core, so whichever carries no pre-release is the finished one and ranks above.
++	if (!preA) {
++		return 1;
++	}
++	if (!preB) {
++		return -1;
++	}
++	return comparePreRelease(preA, preB);
++}
++
++/** Splits `5.1.3-alpha.2+build` into its release core and pre-release; build metadata is dropped. */
++function splitVersion(version: string): [string, string] {
++	const trimmed = version.trim();
++	const plus = trimmed.indexOf('+');
++	const withoutBuild = plus === -1 ? trimmed : trimmed.slice(0, plus);
++	const dash = withoutBuild.indexOf('-');
++	return dash === -1 ? [withoutBuild, ''] : [withoutBuild.slice(0, dash), withoutBuild.slice(dash + 1)];
++}
++
++/** Dot-separated pre-release identifiers: numeric compare numerically and rank below alphanumeric. */
++function comparePreRelease(a: string, b: string): number {
++	const ia = a.split('.');
++	const ib = b.split('.');
++	const len = Math.max(ia.length, ib.length);
++	for (let i = 0; i < len; i++) {
++		const x = ia[i];
++		const y = ib[i];
++		if (x === undefined) {
++			return -1; // a smaller set of identifiers ranks lower: alpha < alpha.1
++		}
++		if (y === undefined) {
++			return 1;
++		}
++		const nx = /^\d+$/.test(x) ? parseInt(x, 10) : undefined;
++		const ny = /^\d+$/.test(y) ? parseInt(y, 10) : undefined;
++		if (nx !== undefined && ny !== undefined) {
++			if (nx !== ny) {
++				return nx < ny ? -1 : 1;
++			}
++			continue;
++		}
++		if (nx !== undefined) {
++			return -1;
++		}
++		if (ny !== undefined) {
++			return 1;
++		}
++		if (x !== y) {
++			return x < y ? -1 : 1;
 +		}
 +	}
 +	return 0;
@@ -3195,3 +3295,74 @@ Index: product-integrator/lib/vscode/src/vs/platform/update/electron-main/update
  		const headers = getUpdateRequestHeaders(this.productService.version);
  		try {
  			this.logService.trace('update#buildUpdateFeedUrl - setting feed URL for Electron autoUpdater', { url, assetID, quality, commit, headers });
+Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/test/node/wso2ComponentsManifest.test.ts
+===================================================================
+--- /dev/null
++++ product-integrator/lib/vscode/src/vs/platform/wso2Update/test/node/wso2ComponentsManifest.test.ts
+@@ -0,0 +1,66 @@
++/**
++ * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
++ *
++ * WSO2 LLC. licenses this file to you under the Apache License,
++ * Version 2.0 (the "License"); you may not use this file except
++ * in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing,
++ * software distributed under the License is distributed on an
++ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++ * KIND, either express or implied. See the License for the
++ * specific language governing permissions and limitations
++ * under the License.
++ */
++
++import { strictEqual } from 'assert';
++import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
++import { compareVersions } from '../../node/wso2ComponentsManifest.js';
++
++suite('wso2ComponentsManifest - compareVersions', () => {
++	ensureNoDisposablesAreLeakedInTestSuite();
++
++	// The SAME vector table lives in the update server's decide_test.bal. Both sides decide what
++	// "newer" means — the server when choosing what to offer, the client when deciding whether to
++	// accept it — so a divergence shows up as a check that finds an update and then does nothing.
++	// Change one of these tables only by changing both.
++	const vectors: [string, string, number][] = [
++		['5.1.3-testalpha1', '5.1.3', -1],           // a pre-release ranks below its release
++		['5.1.3', '5.1.3-testalpha1', 1],
++		['5.1.3-testalpha1', '5.1.3-testalpha1', 0],
++		['5.1.3-testalpha1', '5.1.3-testalpha2', -1],
++		['2201.13.6-alpha2', '2201.13.6', -1],
++		['2201.13.6-Alpha', '2201.13.6-alpha2', -1], // ASCII order: uppercase sorts first
++		['2201.13.4', '2201.13.5', -1],
++		['5.0.0.1', '5.0.0.2', -1],                  // 4-part versions
++		['5.0.0.1', '5.0.0', 1],
++		['5.12.4', '5.13.26081016', -1],
++		['1.0.0-alpha', '1.0.0-alpha.1', -1],        // fewer identifiers rank lower
++		['1.0.0-alpha.1', '1.0.0-alpha.beta', -1],   // numeric ranks below alphanumeric
++		['1.0.0-beta', '1.0.0-beta.2', -1],
++		['1.0.0-beta.2', '1.0.0-beta.11', -1],       // numeric, not lexical: 2 < 11
++		['1.0.0-rc.1', '1.0.0', -1],
++		['5.1.3+build9', '5.1.3', 0],                // build metadata is ignored
++		['5.1.0', '5.1', 0]                          // missing segments are zero
++	];
++
++	test('orders versions the same way the update server does', () => {
++		for (const [a, b, expected] of vectors) {
++			strictEqual(compareVersions(a, b), expected, `compareVersions('${a}', '${b}')`);
++			// Antisymmetry: asked the other way round, the answer must invert. A comparator that
++			// fails this can report both "a is newer" and "b is newer", which would let an update
++			// be offered and refused at the same time.
++			strictEqual(compareVersions(b, a), -expected, `compareVersions('${b}', '${a}')`);
++		}
++	});
++
++	test('a pre-release build is offered the release that supersedes it', () => {
++		// The regression this table exists for: our own test builds are pre-releases, and while
++		// these compared equal the release never looked newer, so it was never offered — the client
++		// sat on a pre-release permanently.
++		strictEqual(compareVersions('5.1.3', '5.1.3-testalpha1') > 0, true);
++	});
++});
