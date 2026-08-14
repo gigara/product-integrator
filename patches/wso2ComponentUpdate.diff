@@ -2241,7 +2241,7 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +			enum: ['stable', 'beta', 'insider'],
 +			default: 'stable',
 +			scope: ConfigurationScope.APPLICATION,
-+			description: localize('wso2.updates.channel.description', "The update channel to receive component updates from.")
++			description: localize('wso2.updates.channel.description', "The update channel to receive updates from. Applies to both WSO2 Integrator itself and its components.")
 +		},
 +		'wso2.updates.titleBar': {
 +			type: 'boolean',
