@@ -407,6 +407,10 @@ jobs:
           # in-app component updates disabled. Stock update feed stays off (STOCK_UPDATE_URL unset).
           WSO2_UPDATE_URL: ${{ secrets.WSO2_UPDATE_URL }}
           WSO2_UPDATE_PUBLIC_KEY: ${{ secrets.WSO2_UPDATE_PUBLIC_KEY }}
+          # Require a signed statement per artifact, but only once this build both pins a key and
+          # mirrors its artifacts — statements exist for mirrored artifacts alone, so requiring them
+          # against third-party source URLs would fail every update on a check it could never pass.
+          WSO2_UPDATE_REQUIRE_ARTIFACT_SIGNATURE: ${{ secrets.WSO2_UPDATE_PUBLIC_KEY != '' && secrets.WSO2_UPDATE_ARTIFACTS_URL != '' }}
         run: |
           chmod +x ./ci/build/update-product.sh
           ./ci/build/update-product.sh "${{ needs.resolve-versions.outputs.integrator_version }}"

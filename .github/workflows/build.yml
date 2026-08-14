@@ -418,6 +418,13 @@ jobs:
           # component updater stays disabled and manifest signature checks are skipped.
           WSO2_UPDATE_URL: ${{ secrets.WSO2_UPDATE_URL }}
           WSO2_UPDATE_PUBLIC_KEY: ${{ secrets.WSO2_UPDATE_PUBLIC_KEY }}
+          # Reject an artifact that ships no signed statement. Without this, a missing statement is
+          # only logged and the artifact installs on its sha256 alone — so anyone able to serve a
+          # document skips verification entirely by just omitting the signature block.
+          # Enabled only when this build BOTH pins a key and mirrors its artifacts: statements are
+          # written for mirrored artifacts only, so requiring them while the document still points at
+          # third-party source URLs would fail every update on a check it could never pass.
+          WSO2_UPDATE_REQUIRE_ARTIFACT_SIGNATURE: ${{ secrets.WSO2_UPDATE_PUBLIC_KEY != '' && secrets.WSO2_UPDATE_ARTIFACTS_URL != '' }}
           # macOS-only: stock Squirrel.Mac core-app updates, served by the SAME update server —
           # darwinUpdateService polls {updateUrl}/api/update/{darwin|darwin-arm64}/{quality}/{commit}
           # (the server derives the response from the darwin manifest's app.commit/app.squirrel)
@@ -944,6 +951,8 @@ jobs:
           # the stock (Squirrel/Win/Linux) update path stays off outside the macOS job.
           WSO2_UPDATE_URL: ${{ secrets.WSO2_UPDATE_URL }}
           WSO2_UPDATE_PUBLIC_KEY: ${{ secrets.WSO2_UPDATE_PUBLIC_KEY }}
+          # See the macOS job for why this is gated on mirroring as well as on the key.
+          WSO2_UPDATE_REQUIRE_ARTIFACT_SIGNATURE: ${{ secrets.WSO2_UPDATE_PUBLIC_KEY != '' && secrets.WSO2_UPDATE_ARTIFACTS_URL != '' }}
         run: |
           chmod +x ./ci/build/update-product.sh
           ./ci/build/update-product.sh "${{ needs.resolve-versions.outputs.integrator_version }}"
