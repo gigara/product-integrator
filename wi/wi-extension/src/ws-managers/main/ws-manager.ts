@@ -30,20 +30,14 @@ import {
     GetSubFoldersRequest,
     GetSubFoldersResponse,
     ProjectDirResponse,
-    GetSupportedMIVersionsResponse,
-    CreateMiProjectRequest,
-    CreateMiProjectResponse,
+    MiFormWsBootstrap,
     CreateSiProjectRequest,
     CreateSiProjectResponse,
     GettingStartedData,
     GettingStartedCategory,
     SampleDownloadRequest,
     BIProjectRequest,
-    GetMigrationToolsResponse,
-    MigrateRequest,
-    ImportIntegrationWsRequest,
-    ImportIntegrationResponse,
-    ImportIntegrationRequest,
+    BiFormWsBootstrap,
     ShowErrorMessageRequest,
     COMMANDS,
     WebviewContext,
@@ -55,30 +49,49 @@ import {
     DefaultOrgNameResponse,
     SampleItem,
     BIRuntimeStatusResponse,
-    EXTENSION_DEPENDENCIES
+    EXTENSION_DEPENDENCIES,
 } from "@wso2/wi-core";
+import { WICommandIds } from "@wso2/wso2-platform-core";
 import { commands, extensions, window, workspace, MarkdownString, Uri, env, ConfigurationTarget } from "vscode";
-import { getActiveBallerinaExtension } from "../../utils/ballerinaExtension";
+import { getActiveBallerinaExtension, waitForBallerinaCommand } from "../../utils/ballerinaExtension";
 import { getDefaultCreationPath } from "../../utils/pathUtils";
-import { askFileOrFolderPath, askFilePath, askProjectPath, BALLERINA_INTEGRATOR_ISSUES_URL, getPlatform, getUsername, handleOpenSamples, isSupportedSLVersionUtil, openInVSCode, sanitizeName, validateProjectPath } from "./utils";
+import { askFileOrFolderPath, askFilePath, askProjectPath, BALLERINA_INTEGRATOR_ISSUES_URL, getPlatform, getUsername, handleOpenSamples, isSupportedSLVersionUtil, openInVSCode, validateProjectPath } from "./utils";
 import * as fs from "fs";
 import * as path from "path";
 import axios from "axios";
 import { stringify as stringifyYaml } from "yaml";
-import { pullMigrationTool } from "./migrate-integration";
-import { MigrationReportWebview } from "../../migration-report/webview";
 import { BridgeLayer } from "../../BridgeLayer";
-import { OpenMigrationReportRequest, SaveMigrationReportRequest, PullMigrationToolRequest } from "@wso2/wi-core";
 import { StateMachine } from "../../stateMachine";
 import { ext } from "../../extensionVariables";
-import { StoreSubProjectReportsRequest } from "@wso2/wi-core";
 import { ballerinaContext } from "../../bi/ballerinaContext";
+import { SHARED_COMMANDS } from "../../bi/types";
 const platform = getPlatform();
 const SAMPLES_INFO_URL = process.env.SAMPLES_INFO_URL;
 const PREBUILT_INTEGRATIONS_URL = process.env.PREBUILT_INTEGRATIONS_URL;
 
+/**
+ * Command ids the webview may invoke via `runCommand`; anything else is refused.
+ * Keep in sync with the `wsClient.runCommand` call sites in `wi-webviews`.
+ *
+ * Note this gates ids only — `args` are forwarded to the command as given, so a
+ * compromised webview still controls the payloads of the commands listed here.
+ */
+const ALLOWED_WEBVIEW_COMMANDS: ReadonlySet<string> = new Set([
+    // Cloud auth / project flows
+    WICommandIds.SignIn,
+    WICommandIds.SignOut,
+    WICommandIds.CancelSignIn,
+    WICommandIds.CloneProject,
+    // Runtime setup
+    "ballerina.setup-ballerina",
+    // VS Code workbench actions used by the welcome and component form views
+    "workbench.action.openRecent",
+    "workbench.action.reloadWindow",
+    "workbench.scm.focus",
+    "git.push",
+]);
+
 export class MainWsManager implements WIVisualizerAPI {
-    private subProjectReports: Map<string, string> = new Map();
     constructor(private projectUri?: string) { }
 
     async getWebviewContext(): Promise<WebviewContext> {
@@ -151,6 +164,15 @@ export class MainWsManager implements WIVisualizerAPI {
     }
 
     async runCommand(props: RunCommandRequest): Promise<RunCommandResponse> {
+        if (!ALLOWED_WEBVIEW_COMMANDS.has(props.command)) {
+            // Forwarding arbitrary ids would make this a general command-execution
+            // primitive for anything that can reach the bridge. Throw rather than
+            // return a failed response: callers cannot detect the latter, since the
+            // success path resolves with whatever the command returned.
+            ext.logError(`Blocked disallowed webview command: ${props.command}`);
+            throw new Error(`Command not allowed: ${props.command}`);
+        }
+
         return await commands.executeCommand(props.command, ...(props.args || []));
     }
 
@@ -228,7 +250,6 @@ export class MainWsManager implements WIVisualizerAPI {
             } else {
                 const selectedDir = await askProjectPath(params.startPath);
                 if (!selectedDir || selectedDir.length === 0) {
-                    window.showErrorMessage('A folder must be selected');
                     resolve({ path: "" });
                 } else {
                     const dirPath = selectedDir[0].fsPath;
@@ -281,13 +302,6 @@ export class MainWsManager implements WIVisualizerAPI {
         await workspace.getConfiguration().update(params.section, params.value, target);
     }
 
-    async getSupportedMIVersionsHigherThan(version: string): Promise<GetSupportedMIVersionsResponse> {
-        return new Promise(async (resolve) => {
-            const versions = ["4.6.0", "4.5.0", "4.4.0", "4.3.0", "4.2.0", "4.1.0", "4.0.0"];
-            resolve({ versions });
-        });
-    }
-
     async getSubFolderNames(params: GetSubFoldersRequest): Promise<GetSubFoldersResponse> {
         return new Promise(async (resolve) => {
             const { path: folderPath } = params;
@@ -325,43 +339,23 @@ export class MainWsManager implements WIVisualizerAPI {
         });
     }
 
-    async createMiProject(params: CreateMiProjectRequest): Promise<CreateMiProjectResponse> {
-        return new Promise(async (resolve, reject) => {
-            try {
-                console.log("Creating MI project with params:", params);
-
-                const miCommandParams = {
-                    name: params.name,
-                    path: path.join(params.directory, params.name),
-                    scope: "user",
-                    open: params.open,
-                    miVersion: params.miVersion,
-                    isConsolidatedProject: params.isConsolidatedProject ?? false,
-                    subProjects: params.subProjects ?? [],
-                    groupId: params.groupID ?? "com.microintegrator.projects",
-                    artifactId: params.artifactID ?? params.name,
-                    version: params.version ?? "1.0.0",
-                };
-
-                const result = await commands.executeCommand("MI.project-explorer.create-project", miCommandParams);
-
-                if (result) {
-                    openInVSCode((result as CreateMiProjectResponse).filePath);
-                    resolve(result as CreateMiProjectResponse);
-                } else {
-                    resolve({ filePath: '' });
-                }
-            } catch (error) {
-                console.error("Error creating MI project:", error);
-                const errorMessage = error instanceof Error ? error.message : String(error);
-                window.showErrorMessage(`Failed to create MI project: ${errorMessage}`);
-                reject(error);
-            }
-        });
-    }
-
     async importProjectFromCapp(): Promise<void> {
         await commands.executeCommand("MI.importProjectFromCapp");
+    }
+
+    async getMiFormWsBootstrap(): Promise<MiFormWsBootstrap> {
+        const miExtension = extensions.getExtension(EXTENSION_DEPENDENCIES.MI);
+        if (!miExtension) {
+            throw new Error("WSO2 Integrator: MI extension is not installed.");
+        }
+        if (!miExtension.isActive) {
+            await miExtension.activate();
+        }
+        const bootstrap = await commands.executeCommand<MiFormWsBootstrap>("MI.getMiFormWsBootstrap");
+        if (!bootstrap) {
+            throw new Error("Failed to obtain the MI form bridge bootstrap.");
+        }
+        return bootstrap;
     }
 
     async createSiProject(params: CreateSiProjectRequest): Promise<CreateSiProjectResponse> {
@@ -473,25 +467,18 @@ export class MainWsManager implements WIVisualizerAPI {
         }
     }
 
-    private async getLangClient() {
-        const ballerinaExt = await getActiveBallerinaExtension();
-        const langClient = ballerinaExt.exports.ballerinaExtInstance.langClient;
-        return langClient as any;
-    }
-
     async isSupportedSLVersion(params: SemanticVersion): Promise<boolean> {
         const ballerinaExt = await getActiveBallerinaExtension();
         return isSupportedSLVersionUtil(ballerinaExt.exports.ballerinaExtInstance, params);
     }
 
-    async getMigrationTools(): Promise<GetMigrationToolsResponse> {
-        const langClient = await this.getLangClient();
-        return langClient.getMigrationTools();
-    }
-
     async createBIProject(params: BIProjectRequest): Promise<void> {
         return new Promise(async (resolve, reject) => {
             try {
+                // Ensure the Ballerina extension is activated so its creation
+                // command is registered (the form may be submitted before the
+                // extension's lazy activation has completed).
+                await getActiveBallerinaExtension();
                 const projectRoot: string = await commands.executeCommand('BI.project.createBIProjectPure', params);
                 if (params.createAsWorkspace && params.projectHandle) {
                     try {
@@ -515,6 +502,28 @@ export class MainWsManager implements WIVisualizerAPI {
         });
     }
 
+    /**
+     * Returns the WebSocket coordinates the embedded BI form uses to talk
+     * directly to the Ballerina host (project-creation RPCs).
+     *
+     * Waits only for the bootstrap command to be registered, NOT for the Ballerina
+     * extension to finish activating: activation resolves only once the language server
+     * is up and the project has been scanned, and this bridge — like the Create flow's
+     * first screen — needs none of that. Waiting for it put a multi-second spinner in
+     * front of the user's very first interaction with the product.
+     */
+    async getBiFormWsBootstrap(): Promise<BiFormWsBootstrap> {
+        await waitForBallerinaCommand(SHARED_COMMANDS.GET_BI_FORM_WS_BOOTSTRAP);
+        const bootstrap = await commands.executeCommand<BiFormWsBootstrap>(SHARED_COMMANDS.GET_BI_FORM_WS_BOOTSTRAP);
+        if (!bootstrap) {
+            throw new Error(
+                'The Ballerina extension did not return BI form WS coordinates. ' +
+                'Ensure the Ballerina extension is installed and up to date.',
+            );
+        }
+        return bootstrap;
+    }
+
     private async writeLocalContextYaml(
         projectRoot: string,
         orgHandle: string,
@@ -531,104 +540,10 @@ export class MainWsManager implements WIVisualizerAPI {
         return validateProjectPath(params.projectPath, params.projectName, params.createDirectory, params.createAsWorkspace);
     }
 
-    async migrateProject(params: MigrateRequest): Promise<void> {
-        return new Promise(async (resolve, reject) => {
-            try {
-                const result = await commands.executeCommand("BI.project.createBIProjectMigration", params);
-                if (params.aiFeatureUsed && params.sourcePath) {
-                    const projectRoot = typeof result === "string" ? result : undefined;
-                    if (projectRoot) {
-                        const migrationAPI = await ballerinaContext.ensureMigrationAPI();
-                        migrationAPI?.setWizardProjectRoot(projectRoot, params.sourcePath);
-                        // Ensure the BridgeLayer forwards chat events now that the API is available
-                        BridgeLayer.setupMigrationSubscription(this.projectUri ?? "global");
-                    }
-                }
-                resolve();
-            } catch (error) {
-                console.error("Error creating Ballerina project:", error);
-                const errorMessage = error instanceof Error ? error.message : String(error);
-                window.showErrorMessage(`Failed to create Ballerina project: ${errorMessage}`);
-                reject(error);
-            }
-        });
-    }
-
-    async storeSubProjectReports(params: StoreSubProjectReportsRequest): Promise<void> {
-        this.subProjectReports.clear();
-        Object.entries(params.reports).forEach(([projectName, reportContent]) => {
-            this.subProjectReports.set(projectName, reportContent);
-        });
-    }
-
-    async pullMigrationTool(args: PullMigrationToolRequest): Promise<void> {
-        try {
-            await pullMigrationTool(args.toolName);
-        } catch (error) {
-            console.error(`Failed to pull migration tool '${args.toolName}':`, error);
-            throw error;
-        }
-    }
-
-    async importIntegration(params: ImportIntegrationWsRequest): Promise<ImportIntegrationResponse> {
-        const orgName = params.orgName || getUsername();
-        const langParams: ImportIntegrationRequest = {
-            orgName: orgName,
-            packageName: sanitizeName(params.packageName),
-            sourcePath: params.sourcePath,
-            parameters: params.parameters,
-        };
-        const langClient = await this.getLangClient();
-        langClient.registerMigrationToolCallbacks();
-
-        // the WI webview receives onMigratedProject notifications as each project is migrated.
-        const projectUri = StateMachine.getContext().projectUri ?? 'global';
-        langClient.onNotification('projectService/pushMigratedProject', (res: any) => {
-            try {
-                BridgeLayer.notifyMigratedProject(res, projectUri);
-            } catch (error) {
-                console.error('[WI] Error forwarding migratedProject notification:', error);
-            }
-        });
-
-        switch (params.commandName) {
-            case "migrate-tibco":
-                return langClient.importTibcoToBI(langParams);
-            case "migrate-mule":
-                return langClient.importMuleToBI(langParams);
-            default:
-                console.error(`Unsupported integration type: ${params.commandName}`);
-                throw new Error(`Unsupported integration type: ${params.commandName}`);
-        }
-    }
-
     async showErrorMessage(params: ShowErrorMessageRequest): Promise<void> {
         const messageWithLink = new MarkdownString(params.message);
         messageWithLink.appendMarkdown(`\n\nPlease [create an issue](${BALLERINA_INTEGRATOR_ISSUES_URL}) if the issue persists.`);
         window.showErrorMessage(messageWithLink.value);
-    }
-
-    async openMigrationReport(params: OpenMigrationReportRequest): Promise<void> {
-        MigrationReportWebview.createOrShow(params.fileName, params.reportContent);
-    }
-
-    async saveMigrationReport(params: SaveMigrationReportRequest): Promise<void> {
-        const vscode = await import('vscode');
-
-        // Show save dialog
-        const saveUri = await vscode.window.showSaveDialog({
-            defaultUri: vscode.Uri.file(params.defaultFileName),
-            filters: {
-                'HTML files': ['html'],
-                'All files': ['*']
-            }
-        });
-
-        if (saveUri) {
-            // Write the report content to the selected file
-            await vscode.workspace.fs.writeFile(saveUri, Buffer.from(params.reportContent, 'utf8'));
-            vscode.window.showInformationMessage(`Migration report saved to ${saveUri.fsPath}`);
-        }
     }
 
     async setWebviewCache(params: { cacheKey: string; data: unknown }): Promise<void> {
@@ -649,63 +564,6 @@ export class MainWsManager implements WIVisualizerAPI {
 
     async getDefaultCreationPath(): Promise<WorkspaceRootResponse> {
         return { path: getDefaultCreationPath() };
-    }
-
-    async wizardEnhancementReady(): Promise<void> {
-        const migrationAPI = await ballerinaContext.ensureMigrationAPI();
-        await migrationAPI?.wizardEnhancementReady();
-    }
-
-    async openMigratedProject(): Promise<void> {
-        const migrationAPI = await ballerinaContext.ensureMigrationAPI();
-        migrationAPI?.openMigratedProject();
-    }
-
-    async abortMigrationAgent(): Promise<void> {
-        const migrationAPI = await ballerinaContext.ensureMigrationAPI();
-        migrationAPI?.abortAgent();
-    }
-
-    async checkAIAuth(): Promise<boolean> {
-        const migrationAPI = await ballerinaContext.ensureMigrationAPI();
-        const result = migrationAPI?.isAIAuthenticated() ?? false;
-        console.log('[ws-manager] checkAIAuth: migrationAPI available:', !!migrationAPI, 'result:', result);
-        return result;
-    }
-
-    async triggerAICopilotSignIn(): Promise<{ success: boolean; error?: string }> {
-        const migrationAPI = await ballerinaContext.ensureMigrationAPI();
-        console.log('[ws-manager] triggerAICopilotSignIn: migrationAPI available:', !!migrationAPI);
-        const result = await (migrationAPI?.signInForAI() ?? Promise.resolve({ success: false, error: "Migration API not available." }));
-        console.log('[ws-manager] triggerAICopilotSignIn: result:', JSON.stringify(result));
-        return result;
-    }
-
-    async triggerAnthropicKeySignIn(params: { apiKey: string }): Promise<{ success: boolean; error?: string }> {
-        try {
-            const migrationAPI = await ballerinaContext.ensureMigrationAPI();
-            return await (migrationAPI?.signInWithAnthropicKey(params.apiKey) ?? Promise.resolve({ success: false, error: "Migration API not available." }));
-        } catch (e) {
-            return { success: false, error: e instanceof Error ? e.message : "Authentication failed. Please try again." };
-        }
-    }
-
-    async triggerAwsBedrockSignIn(params: { accessKeyId: string; secretAccessKey: string; region: string; sessionToken?: string }): Promise<{ success: boolean; error?: string }> {
-        try {
-            const migrationAPI = await ballerinaContext.ensureMigrationAPI();
-            return await (migrationAPI?.signInWithAwsBedrock(params) ?? Promise.resolve({ success: false, error: "Migration API not available." }));
-        } catch (e) {
-            return { success: false, error: e instanceof Error ? e.message : "Authentication failed. Please try again." };
-        }
-    }
-
-    async triggerVertexAiSignIn(params: { projectId: string; location: string; clientEmail: string; privateKey: string }): Promise<{ success: boolean; error?: string }> {
-        try {
-            const migrationAPI = await ballerinaContext.ensureMigrationAPI();
-            return await (migrationAPI?.signInWithVertexAI(params) ?? Promise.resolve({ success: false, error: "Migration API not available." }));
-        } catch (e) {
-            return { success: false, error: e instanceof Error ? e.message : "Authentication failed. Please try again." };
-        }
     }
 
     /**

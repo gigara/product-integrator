@@ -88,7 +88,7 @@ function registerEmbeddedWelcomeBootstrapCommand(context: vscode.ExtensionContex
 		vscode.commands.registerCommand(GET_EMBEDDED_WELCOME_BOOTSTRAP_COMMAND, async () => {
 			StateMachine.setCurrentView(ViewType.WELCOME);
 
-			const bootstrap = BridgeLayer.startWebSocketServer(EMBEDDED_WELCOME_PROJECT_URI);
+			const bootstrap = await BridgeLayer.startWebSocketServer(EMBEDDED_WELCOME_PROJECT_URI);
 			BridgeLayer.notifyStateChanged(EMBEDDED_WELCOME_PROJECT_URI, {
 				currentView: ViewType.WELCOME,
 				projectUri: EMBEDDED_WELCOME_PROJECT_URI,
@@ -116,6 +116,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<Extens
 	ext.log("Activating WSO2 Integrator Extension");
 
 	try {
+		// set runtime to context
+		await vscode.commands.executeCommand('setContext', 'WI.isWiRuntime', process.env.WSO2_INTEGRATOR_RUNTIME === 'true');
 		const productUpdateService = new ProductUpdateServiceClient(context);
 
 		registerEmbeddedWelcomeBootstrapCommand(context);
@@ -151,11 +153,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<Extens
 
 		// Boot cloud/RPC/auth functionality in the background so product update
 		// notifications are not blocked by Choreo RPC startup in local/dev setups.
-		void activateCloudFunctionality(context).catch((error) => {
+		const cloudAPIs = new WICloudExtensionAPI();
+		void activateCloudFunctionality(context, cloudAPIs).catch((error) => {
 			ext.logError("Cloud functionality failed to activate", error as Error);
 		});
 
-		const exports: ExtensionExports = { cloudAPIs: new WICloudExtensionAPI() };
+		const exports: ExtensionExports = { cloudAPIs };
 		ext.log("WSO2 Integrator Extension activated successfully");
 		return exports;
 	} catch (error) {

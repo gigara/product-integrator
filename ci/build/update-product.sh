@@ -57,7 +57,10 @@ fi
 if [ -z "${BALLERINA_EXTENSION_VERSION}" ] && [ -z "${BALLERINA_VSIX_PATH}" ]; then
   BALLERINA_EXTENSION_VERSION="latest"
 fi
-WI_EXTENSION_VERSION=$(node -p "require('./wi/wi-extension/package.json').version")
+# The properties file is the single declaration; ci/build/apply-version.sh mirrors it into
+# wi/wi-extension/package.json, which is what package-vsix.js names the .vsix from.
+WI_EXTENSION_VERSION=$(read_version "wi.extension.version")
+require_non_empty "${WI_EXTENSION_VERSION}" "wi.extension.version"
 
 cat > lib/vscode/product.json <<EOF
 {
@@ -67,6 +70,8 @@ cat > lib/vscode/product.json <<EOF
     "nameLong": "WSO2 Integrator",
     "applicationName": "wso2-integrator",
     "dataFolderName": ".wso2-integrator",
+    "sharedDataFolderName": ".wso2-integrator-shared",
+    "builtInExtensionsEnabledWithAutoUpdates": [],
     "win32MutexName": "wso2-integrator",
     "licenseName": "MIT",
     "licenseUrl": "https://wso2.com/licenses/",
@@ -86,7 +91,7 @@ cat > lib/vscode/product.json <<EOF
     "urlProtocol": "wso2-integrator",
     "licenseFileName": "LICENSE.txt",
     "reportIssueUrl": "https://github.com/wso2/product-integrator/issues",
-    "documentationUrl": "https://wso2.github.io/docs-integrator/",
+    "documentationUrl": "https://wso2.com/integration-platform/docs/",
     "keyboardShortcutsUrlMac": "https://go.microsoft.com/fwlink/?linkid=832143",
     "keyboardShortcutsUrlLinux": "https://go.microsoft.com/fwlink/?linkid=832144",
     "keyboardShortcutsUrlWin": "https://go.microsoft.com/fwlink/?linkid=832145",

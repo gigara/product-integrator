@@ -14,6 +14,13 @@ that brings together Ballerina language runtime, WSO2 Integration Control Plane,
 and low-code editor in one unified package.
 
 %global debug_package %{nil}
+# Disable RPM's automatic post-install processing (binary strip, etc.). This is a
+# bundled Electron app: resources/app/node_modules/@microsoft/mxc-sdk ships prebuilt
+# cross-platform binaries (e.g. bin/arm64/*), and the x86_64 build host's `strip`
+# cannot parse the ARM64 ELF files, which aborts the %install phase. Electron/Node
+# binaries must not be stripped anyway, so skip the whole brp step (matches deb, which
+# does not auto-strip).
+%global __os_install_post %{nil}
 %prep
 %setup -q -c
 
@@ -65,8 +72,10 @@ rm -rf %{buildroot}
 %post
 # Change ownership and permissions for integrator files
 chown -R root:root /usr/share/wso2-integrator
-chmod -R o+w /usr/share/wso2-integrator/components/icp/bin/database/ 2>/dev/null || true
-chmod -R o+rwx /usr/share/wso2-integrator/components/icp/www/public/ 2>/dev/null || true
+chmod -R a+rwX /usr/share/wso2-integrator/components/icp/bin/database/ 2>/dev/null || true
+mkdir -p /usr/share/wso2-integrator/components/icp/logs
+chmod -R a+rwX /usr/share/wso2-integrator/components/icp/logs/
+chmod a+rw /usr/share/wso2-integrator/components/icp/www/config.json 2>/dev/null || true
 chmod 4755 /usr/share/wso2-integrator/chrome-sandbox 2>/dev/null || true
 
 # Create symlink to /usr/bin

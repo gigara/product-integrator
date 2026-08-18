@@ -20,7 +20,8 @@ import { ExtensionContext, TreeView, commands, window, workspace, extensions } f
 import { ProjectExplorerEntry, ProjectExplorerEntryProvider } from './project-explorer-provider';
 import { SHARED_COMMANDS, BI_COMMANDS, MACHINE_VIEW, NodePosition } from '../types';
 import { ballerinaContext } from '../ballerinaContext';
-import { COMMANDS } from '@wso2/wi-core';
+import { COMMANDS, ViewType } from '@wso2/wi-core';
+import { StateMachine } from '../../stateMachine';
 
 const WI_PROJECT_EXPLORER_VIEW_ID = 'wso2-integrator.explorer';
 
@@ -98,11 +99,12 @@ function registerCoreCommands(context: ExtensionContext, dataProvider: ProjectEx
 function registerBallerinaCommands(isBallerinaWorkspace?: boolean, isEmptyWorkspace?: boolean): void {
     commands.executeCommand('setContext', 'BI.isWorkspaceSupported', ballerinaContext.isWorkspaceSupported ?? false);
 
-    if (isBallerinaWorkspace) {
-        commands.executeCommand('setContext', 'BI.isBallerinaWorkspace', true);
-        if (isEmptyWorkspace) {
-            commands.executeCommand('setContext', 'BI.project.empty', true);
-        }
+    // Always set an explicit boolean so `when` clauses can reliably distinguish a
+    // standalone integration/library (false) from a project/workspace (true) — e.g. to
+    // show "Convert to Project" only for standalone and "Add Integration" only in a project.
+    commands.executeCommand('setContext', 'BI.isBallerinaWorkspace', isBallerinaWorkspace ?? false);
+    if (isBallerinaWorkspace && isEmptyWorkspace) {
+        commands.executeCommand('setContext', 'BI.project.empty', true);
     }
     // Focus tree and show visualizer for BI projects
     commands.executeCommand(`${WI_PROJECT_EXPLORER_VIEW_ID}.focus`);
@@ -161,10 +163,18 @@ function isDebugSessionActive(): boolean {
 }
 
 function handleNonBallerinaVisibility(): void {
-    if (!ballerinaContext.biSupported) {
-        commands.executeCommand('setContext', 'BI.status', 'updateNeed');
+    if (ballerinaContext.langClient) {
+        if (!ballerinaContext.biSupported) {
+            commands.executeCommand('setContext', 'BI.status', 'updateNeed');
+        } else {
+            commands.executeCommand('setContext', 'BI.status', 'unknownProject');
+        }
     } else {
-        commands.executeCommand('setContext', 'BI.status', 'unknownProject');
+        commands.executeCommand('setContext', 'BI.status', 'noLS');
     }
-    commands.executeCommand(COMMANDS.OPEN_WELCOME);
+    // Don't override intentional views (e.g. the update view opened by "Update Now").
+    const currentView = StateMachine.getContext().currentView;
+    if (currentView !== ViewType.SETUP_BALLERINA) {
+        commands.executeCommand(COMMANDS.OPEN_WELCOME);
+    }
 }

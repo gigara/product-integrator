@@ -36,8 +36,8 @@ import {
     type WIRuntime,
     loadSelectedRuntime,
 } from "../shared/runtime";
-import { BIProjectForm } from "./biForm";
-import { MiProjectWizard } from "./miForm";
+import { RemoteBIProjectForm } from "./federation/RemoteBIProjectForm";
+import { RemoteMiProjectForm } from "./federation/RemoteMiProjectForm";
 import { SiProjectWizard } from "./siForm";
 
 const LoadingContainer = styled.div`
@@ -134,8 +134,8 @@ export function CreationView({
                         </HeaderRow>
                     </FormPanelHeader>
                     <FormBody>
-                        {projectType === "WSO2: BI" && <BIProjectForm ballerinaUnavailable={ballerinaUnavailable} />}
-                        {projectType === "WSO2: MI" && <MiProjectWizard />}
+                        {projectType === "WSO2: BI" && <RemoteBIProjectForm ballerinaUnavailable={ballerinaUnavailable} />}
+                        {projectType === "WSO2: MI" && <RemoteMiProjectForm onBack={gotToWelcome} />}
                         {projectType === "WSO2: SI" && <SiProjectWizard />}
                     </FormBody>
                 </FormPanel>

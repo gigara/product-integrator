@@ -7,10 +7,16 @@ gettingStarted.diff
 packageResources.diff
 wso2-font-pkg-update
 disableAiFeatures.diff
-increaseHeap.diff
+removeCopilotStatusBar.diff
 skip-extension-outdated-test.diff
 disableVsixChecksumCheck.diff
 disableWorkspaceTrust.diff
 disableThirdPartyExtNotifications.diff
 injectEnvs.diff
 integratorMenus.diff
+removeXmlLanguageAssociation.diff
+disableAgentSessions.diff
+skipCopilotRipgrepShim.diff
+coreCiSerializeBundles.diff
+increaseHeap.diff
+windowsSigntoolOptional.diff
