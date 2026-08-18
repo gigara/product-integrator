@@ -275,7 +275,9 @@ jobs:
     env:
       # When AWS creds are absent (e.g. a fork), skip the S3/CDN uploads and still produce the
       # downloadable GitHub build artifacts; upstream (secret set) publishes to S3 as before.
+      # secrets can't be referenced from a step `if:`. HAS_AWS says CREDENTIALS exist; HAS_INSTALLER_BUCKET says a target does. They are different secrets, and conflating them meant configuring the UPDATE bucket switched on uploads to an installer bucket nobody had set, failing the build with `s3:///wi/...`.
       HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
+      HAS_INSTALLER_BUCKET: ${{ secrets.AWS_S3_BUCKET != '' }}
     defaults:
       run:
         working-directory: lib/vscode
@@ -729,12 +731,15 @@ jobs:
           aws-region: us-east-1
 
       - name: Upload macOS artifacts to S3
-        if: ${{ inputs.build_packed_installers == true && env.HAS_AWS == 'true' }}
+        if: ${{ inputs.build_packed_installers == true && env.HAS_AWS == 'true' && env.HAS_INSTALLER_BUCKET == 'true' }}
         working-directory: .
         run: |
           S3_PATH="s3://${{ secrets.AWS_S3_BUCKET }}/wi/${{ github.run_id }}/"
           aws s3 cp installers/mac/ "${S3_PATH}" --recursive --exclude "*" --include "*.dmg"
 
+      # Gated on HAS_AWS only: this uploads to the UPDATE bucket and guards that itself below.
+      # Requiring the installer bucket here would skip the mac update payload on any deployment that
+      # publishes updates without also mirroring installers.
       - name: Publish Squirrel.Mac update payload to update bucket
         if: ${{ inputs.build_packed_installers == true && env.HAS_AWS == 'true' }}
         working-directory: .
@@ -807,7 +812,9 @@ jobs:
     env:
       # When AWS creds are absent (e.g. a fork), skip the S3 upload and still produce the
       # downloadable GitHub build artifacts; upstream (secret set) publishes to S3 as before.
+      # secrets can't be referenced from a step `if:`. HAS_AWS says CREDENTIALS exist; HAS_INSTALLER_BUCKET says a target does. They are different secrets, and conflating them meant configuring the UPDATE bucket switched on uploads to an installer bucket nobody had set, failing the build with `s3:///wi/...`.
       HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
+      HAS_INSTALLER_BUCKET: ${{ secrets.AWS_S3_BUCKET != '' }}
     defaults:
       run:
         working-directory: lib/vscode
@@ -1214,7 +1221,7 @@ jobs:
           aws-region: us-east-1
 
       - name: Upload Windows artifacts to S3
-        if: ${{ inputs.build_packed_installers == true && env.HAS_AWS == 'true' }}
+        if: ${{ inputs.build_packed_installers == true && env.HAS_AWS == 'true' && env.HAS_INSTALLER_BUCKET == 'true' }}
         shell: bash
         working-directory: .
         run: |
