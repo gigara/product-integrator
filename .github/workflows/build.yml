@@ -1571,6 +1571,9 @@ jobs:
       id-token: write
       contents: read
     env:
+      # secrets can't be referenced from a step `if:`, so their presence is hoisted here — the same
+      # reason HAS_AWS exists on the build jobs.
+      HAS_PINNED_KEY: ${{ secrets.WSO2_UPDATE_PUBLIC_KEY != '' && secrets.COSIGN_PUBLIC_KEY != '' }}
       # New builds publish to the channel chosen at dispatch (default insider); the
       # promote-channel workflow later copies a source document down the ladder.
       CHANNEL: ${{ inputs.channel || 'insider' }}
@@ -1652,6 +1655,34 @@ jobs:
       - name: cosign-installer
         if: ${{ steps.targets.outputs.targets != '' }}
         uses: sigstore/cosign-installer@v3
+
+      # The client verifies artifacts against WSO2_UPDATE_PUBLIC_KEY, baked into product.json at
+      # build time; CI signs with COSIGN_PRIVATE_KEY. Nothing downstream compares the two, so if they
+      # are not the same key pair every client rejects every artifact — and the signing steps below
+      # still pass, because they verify against COSIGN_PUBLIC_KEY. That failure would only surface on
+      # a user's machine, after the release. One base64 decode catches it here instead.
+      - name: Check the pinned key matches the signing key
+        if: ${{ steps.targets.outputs.targets != '' && env.HAS_PINNED_KEY == 'true' }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$WSO2_UPDATE_PUBLIC_KEY" | base64 -d > pinned.pem 2>/dev/null || {
+            echo "::error::WSO2_UPDATE_PUBLIC_KEY is not valid base64. It must be 'base64 < cosign.pub'." >&2
+            exit 1
+          }
+          printf '%s' "$COSIGN_PUBLIC_KEY" > signing.pem
+          # Compare the DER of each, so PEM line wrapping or a trailing newline cannot fail a
+          # correctly configured pair.
+          openssl pkey -pubin -in pinned.pem  -outform DER -out pinned.der
+          openssl pkey -pubin -in signing.pem -outform DER -out signing.der
+          if ! cmp -s pinned.der signing.der; then
+            echo "::error::WSO2_UPDATE_PUBLIC_KEY does not match COSIGN_PUBLIC_KEY. Clients built here would reject every artifact this run signs." >&2
+            exit 1
+          fi
+          echo "Pinned client key matches the signing key."
+          rm -f pinned.pem signing.pem pinned.der signing.der
+        env:
+          WSO2_UPDATE_PUBLIC_KEY: ${{ secrets.WSO2_UPDATE_PUBLIC_KEY }}
+          COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
 
       - name: Sign source document
         if: ${{ steps.targets.outputs.targets != '' }}

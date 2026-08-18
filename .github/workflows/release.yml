@@ -40,6 +40,11 @@ on:
           - insider
           - beta
           - stable
+      update_line_selector:
+        description: 'Client versions this release serves (e.g. 5.1.x). Blank uses <major>.<minor>.x of this version, which is what a normal release wants. Set it for a hotfix pinned to one version, or to move an older line onto this build.'
+        required: false
+        default: ''
+        type: string
       runner:
         description: 'Select runner type'
         required: true
@@ -207,6 +212,7 @@ jobs:
       publish_tag: v${{ inputs.version }}
       is_prerelease: ${{ inputs.is_prerelease }}
       channel: ${{ inputs.channel }}
+      update_line_selector: ${{ inputs.update_line_selector }}
       target_commitish: ${{ needs.prepare-release-branch.outputs.sha }}
       runner: ${{ inputs.runner }}
       build_linux: ${{ inputs.build_linux }}
