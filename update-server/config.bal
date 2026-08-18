@@ -47,6 +47,21 @@ configurable string s3SecretAccessKey = "";
 // re-fetching. Bounds how long a newly published manifest takes to go live.
 configurable decimal s3CacheSeconds = 60;
 
+// Public HTTPS base for the manifests prefix, e.g. "https://updates.wso2.com/manifests".
+//
+// An alternative to s3Bucket for a bucket whose manifests prefix is readable without credentials:
+// the S3 client signs every request, so it needs keys even for a public object, while this path is a
+// plain GET. Reading without credentials does not mean trusting without checks — `sourcePublicKey`
+// still verifies the document's signature before it is parsed, which is what makes a public prefix
+// tolerable.
+//
+// s3Bucket wins when both are set, so tightening the prefix later is purely additive: add the bucket
+// and its keys, and this becomes dead configuration rather than something to remove first.
+//
+// Read-only by design. CI writes to the bucket directly in this mode, so the admin publish endpoint
+// refuses rather than writing somewhere nothing reads.
+configurable string manifestsBaseUrl = "";
+
 // Bearer token required for the admin publish (PUT) endpoint. When empty
 // (the default) the publish endpoint is disabled entirely and responds 404.
 configurable string adminToken = "";

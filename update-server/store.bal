@@ -55,6 +55,9 @@ function readSourceManifest(string channel, string fileName) returns [byte[], st
     if s3Bucket != "" {
         return readS3Artifact(string `manifests/${channel}/${fileName}`);
     }
+    if manifestsBaseUrl != "" {
+        return readHttpsArtifact(string `${channel}/${fileName}`);
+    }
     string path = check file:joinPath(dataDir, "api", "v1", "updates", channel, fileName);
     return readArtifact(path);
 }
@@ -69,6 +72,11 @@ function writeSourceManifest(string channel, string fileName, byte[] content) re
     }
     if s3Bucket != "" {
         return writeS3Artifact(string `manifests/${channel}/${fileName}`, content);
+    }
+    if manifestsBaseUrl != "" {
+        // Refuse rather than fall through to the local directory: in this mode reads come from the
+        // public base URL, so a local write would appear to succeed and then never be served.
+        return error("cannot publish while reading manifests over HTTPS; publish to the bucket instead");
     }
     string path = check file:joinPath(dataDir, "api", "v1", "updates", channel, fileName);
     return writeArtifact(path, content);
