@@ -434,6 +434,15 @@ jobs:
 
       - name: Setup WI
         uses: gigara/setup-rush@v1.2.0
+        with:
+          # The action's pnpm cache key is hashFiles('**/pnpm-lock.yaml') — a recursive glob over the
+          # whole workspace. The FIRST setup-rush call in this job runs before dependencies are
+          # installed and is fine; by the time this one runs the tree carries a full node_modules and
+          # hashFiles exceeds its 120s limit. It does so in the POST step, so a cache save that saves
+          # nothing fails the job AFTER the build, packaging and signing have all succeeded, and
+          # skips every job downstream. Disabling it here costs nothing: the first call already saved
+          # that cache in this same job.
+          cache-pnpm: false
 
       - name: Build WI extension
         working-directory: .
