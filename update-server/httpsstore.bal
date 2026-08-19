@@ -35,8 +35,17 @@ function initManifestsClient() returns http:Client?|error {
     if manifestsBaseUrl == "" {
         return ();
     }
+    // A hand-entered base URL often carries a trailing slash, which would make every request
+    // `//stable/...` and 404 on both S3 and a CDN. Cheaper to tolerate than to diagnose.
+    string base = manifestsBaseUrl;
+    while base.endsWith("/") {
+        base = base.substring(0, base.length() - 1);
+    }
+    // Logged at startup because this store fails SILENTLY by design: a bad base URL degrades to
+    // "no updates" for every client, and the effective value is otherwise invisible.
+    log:printInfo(string `reading source documents over HTTPS from ${base} (expects <base>/<channel>/index.json)`);
     // followRedirects because a CDN in front of the bucket commonly 301s to a canonical host.
-    return new (manifestsBaseUrl, {followRedirects: {enabled: true, maxCount: 3}});
+    return new (base, {followRedirects: {enabled: true, maxCount: 3}});
 }
 
 // Same cache shape and semantics as the S3 reader, including caching a miss so repeated polls for a
