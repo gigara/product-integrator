@@ -44,7 +44,11 @@ service / on updateListener {
     // configured channel allowlist is returned as-is (informational; probing the
     // bucket per channel on every call would defeat the read cache).
     resource function get api/v1/channels() returns http:Response {
-        if s3Bucket != "" {
+        // Any remote store: the configured allowlist is the answer. Probing a bucket or CDN per
+        // channel on every call would defeat the read cache — and reporting an empty list because
+        // the LOCAL directory is empty (which it always is in a remote mode) reads as "nothing is
+        // published", which is exactly the wrong thing to tell someone debugging a quiet server.
+        if s3Bucket != "" || manifestsBaseUrl != "" {
             return jsonResponse(200, {channels: allowedChannels.toJson()});
         }
         string[] available = [];
