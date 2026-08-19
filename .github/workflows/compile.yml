@@ -324,8 +324,28 @@ jobs:
       # package (e.g. a krb5 security update), the old .deb is dropped from the pool
       # and the stale index resolves to a 404. cache-apt-pkgs-action does not refresh
       # the index itself, so do it here.
+      # A release run lost 91 minutes here: the fetch stalled mid-transfer on the Ubuntu mirror at
+      # 15:34 and produced no further output until GitHub cancelled the job at 16:58. apt has no
+      # default timeout for a stalled connection, so the job neither failed nor progressed.
+      #
+      # Bound each attempt and retry: a stalled mirror is transient, and the alternative is losing an
+      # entire build to it. Both the outer `timeout` and Acquire::http::Timeout are needed — the
+      # latter bounds a connection that stalls, the former a run that hangs for any other reason.
       - name: Refresh apt package index
-        run: sudo apt-get update
+        timeout-minutes: 15
+        run: |
+          for attempt in 1 2 3; do
+            if sudo timeout 240 apt-get update \
+                 -o Acquire::Retries=3 \
+                 -o Acquire::http::Timeout=30 \
+                 -o Acquire::https::Timeout=30; then
+              exit 0
+            fi
+            echo "apt-get update attempt ${attempt} failed or stalled; retrying in 15s"
+            sleep 15
+          done
+          echo "::error::apt-get update did not succeed after 3 attempts" >&2
+          exit 1
 
       - name: Cache apt packages
         uses: awalsh128/cache-apt-pkgs-action@latest
