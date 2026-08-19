@@ -363,15 +363,35 @@ APPLESCRIPT
 print_info "Finalising DMG"
 sync
 sleep 3
+# Something transiently holds a freshly-written volume — Spotlight indexing, fsevents, or the
+# Finder used for the window layout above. Three attempts two seconds apart was not enough on a
+# real arm64 runner: the build failed here after the app had been signed and the pkg written.
+#
+# So: escalate the backoff to ~30s total, name the holder when it fails (otherwise the next
+# occurrence is just as mysterious as this one was), and fall back to diskutil, which can evict a
+# volume hdiutil will not.
 _detach_ok=0
-for _retry in 1 2 3; do
+for _retry in 1 2 3 4 5 6; do
     if hdiutil detach "$DMG_MOUNT_DIR" -force -quiet; then
         _detach_ok=1; break
     fi
-    [ "$_retry" -lt 3 ] && { print_info "Detach attempt $_retry failed, retrying in 2s..."; sleep 2; }
+    if [ "$_retry" -lt 6 ]; then
+        _wait=$((_retry * 2))
+        print_info "Detach attempt $_retry failed; who is holding it:"
+        lsof +D "$DMG_MOUNT_DIR" 2>/dev/null | head -8 || true
+        print_info "Retrying in ${_wait}s..."
+        sleep "$_wait"
+    fi
 done
 if [ "$_detach_ok" -eq 0 ]; then
-    print_error "Could not unmount $DMG_MOUNT_DIR after 3 attempts; aborting before DMG conversion"
+    print_info "hdiutil could not detach; trying diskutil unmount force"
+    if diskutil unmount force "$DMG_MOUNT_DIR" >/dev/null 2>&1; then
+        _detach_ok=1
+    fi
+fi
+if [ "$_detach_ok" -eq 0 ]; then
+    print_error "Could not unmount $DMG_MOUNT_DIR; aborting before DMG conversion"
+    lsof +D "$DMG_MOUNT_DIR" 2>/dev/null | head -20 || true
     exit 1
 fi
 DMG_MOUNT_DIR=""  # Clear only after successful detach so the trap can still retry on failure
