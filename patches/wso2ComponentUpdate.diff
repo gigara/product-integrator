@@ -515,7 +515,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/wso2ComponentUpdateService.ts
-@@ -0,0 +1,1326 @@
+@@ -0,0 +1,1334 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -1817,20 +1817,28 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		return process.arch === 'arm64' ? 'arm64' : 'x64';
 +	}
 +
++	private static isLoopbackHost(host: string): boolean {
++		return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
++	}
++
 +	private isAllowedUrl(url: string): boolean {
 +		try {
 +			const parsed = new URL(url);
 +			const host = parsed.hostname.toLowerCase();
-+			const isLoopback = host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
-+			// Require HTTPS except for loopback hosts, which are used for local
-+			// update-server development and cannot be intercepted remotely.
-+			if (parsed.protocol !== 'https:' && !(isLoopback && parsed.protocol === 'http:')) {
++			const configuredHost = this.updateBaseUrl ? new URL(this.updateBaseUrl).hostname.toLowerCase() : undefined;
++
++			// Loopback over plain http exists for local update-server development. It is allowed only
++			// when the configured update server is ITSELF loopback: a production build points at the
++			// real server, so there it stays refused. Otherwise every build would carry a path that
++			// accepts unverified bytes from any process able to listen on a local port.
++			const isLoopback = Wso2ComponentUpdateService.isLoopbackHost(host);
++			const developingAgainstLocalServer = !!configuredHost && Wso2ComponentUpdateService.isLoopbackHost(configuredHost);
++			if (isLoopback) {
++				return developingAgainstLocalServer && (parsed.protocol === 'http:' || parsed.protocol === 'https:');
++			}
++			if (parsed.protocol !== 'https:') {
 +				return false;
 +			}
-+			if (isLoopback) {
-+				return true;
-+			}
-+			const configuredHost = this.updateBaseUrl ? new URL(this.updateBaseUrl).hostname.toLowerCase() : undefined;
 +			if (configuredHost && host === configuredHost) {
 +				return true;
 +			}

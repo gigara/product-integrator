@@ -114,9 +114,10 @@ jobs:
           ref: ${{ inputs.ref || github.ref }}
           submodules: recursive
 
-      # This workflow file lives on the default branch so GitHub will register it for dispatch, but
-      # the update-publishing tooling it drives is not merged there yet. Dispatched with the default
-      # ref it would fail deep inside a step with "module not found"; this says what to do instead.
+      # The dispatched ref decides which tooling runs, and a ref that predates the update mechanism
+      # (an old release tag, or the default branch before this merges) carries none of it. Without
+      # this the run dies several steps later on a missing module, which reads as a broken workflow
+      # rather than the wrong ref.
       - name: Check this ref carries the publish tooling
         run: |
           set -euo pipefail
@@ -127,7 +128,7 @@ jobs:
           done
           if [ ${#missing[@]} -gt 0 ]; then
             printf '::error::%s is not on this ref\n' "${missing[@]}" >&2
-            echo "::error::Dispatch this workflow with the ref that carries the update mechanism (Run workflow -> Branch), not the default branch." >&2
+            echo "::error::Dispatch this workflow with a ref that carries the update mechanism (Run workflow -> Branch)." >&2
             exit 1
           fi
 
