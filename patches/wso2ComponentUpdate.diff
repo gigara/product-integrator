@@ -3366,3 +3366,67 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/test/node/wso2Co
 +		strictEqual(compareVersions('5.1.3', '5.1.3-testalpha1') > 0, true);
 +	});
 +});
+Index: product-integrator/lib/vscode/src/vs/workbench/contrib/update/browser/postUpdateWidget.ts
+===================================================================
+--- product-integrator.orig/lib/vscode/src/vs/workbench/contrib/update/browser/postUpdateWidget.ts
++++ product-integrator/lib/vscode/src/vs/workbench/contrib/update/browser/postUpdateWidget.ts
+@@ -112,7 +112,13 @@ export class PostUpdateWidgetContributio
+ 	}
+ 
+ 	private async getUpdateInfo(input?: string | null): Promise<IParsedUpdateInfoInput | undefined> {
+-		if (!input) {
++		// getUpdateInfoUrl() is hardcoded to code.visualstudio.com and keyed on the VS Code base
++		// version, so on this fork it fetches MICROSOFT's release notes for whatever upstream version
++		// we are built on and renders them as ours. It returns 404 today, which is the only reason
++		// nobody has seen it; that page appearing upstream is not a safe thing to depend on. Skip the
++		// fetch entirely for this product and let the widget stay hidden until it has somewhere of
++		// its own to read from.
++		if (!input && !this.productService.wiversion) {
+ 			try {
+ 				const url = getUpdateInfoUrl(this.productService.version);
+ 				const context = await this.requestService.request({ url, callSite: 'postUpdateWidget' }, CancellationToken.None);
+Index: product-integrator/lib/vscode/src/vs/workbench/contrib/update/browser/updateTooltip.ts
+===================================================================
+--- product-integrator.orig/lib/vscode/src/vs/workbench/contrib/update/browser/updateTooltip.ts
++++ product-integrator/lib/vscode/src/vs/workbench/contrib/update/browser/updateTooltip.ts
+@@ -137,7 +137,10 @@ export class UpdateTooltip extends Dispo
+ 	}
+ 
+ 	private updateCurrentVersion() {
+-		const productVersion = this.productService.version;
++		// `version` is the VS Code base version this fork is built on (1.127.x) — meaningless to a
++		// WSO2 Integrator user, and actively confusing next to the product name. `wiversion` is the
++		// version they installed and the one the update server reasons about.
++		const productVersion = this.productService.wiversion ?? this.productService.version;
+ 		if (productVersion) {
+ 			const currentCommitId = this.productService.commit?.substring(0, 7);
+ 			this.currentVersionNode.textContent = currentCommitId
+@@ -381,8 +384,11 @@ export class UpdateTooltip extends Dispo
+ 			this.latestVersionNode.parentElement!.style.display = 'none';
+ 		}
+ 
+-		// Release date
+-		const releaseDate = update?.timestamp ?? tryParseDate(this.productService.date);
++		// Release date. `product.date` is the upstream VS Code build date, not ours, so it must not
++		// stand in for one: shown beside our product name it reads as the date this build was
++		// released, which it is not. An update carries a real timestamp from the update server; with
++		// no update in hand the line is simply omitted.
++		const releaseDate = update?.timestamp ?? (this.productService.wiversion ? undefined : tryParseDate(this.productService.date));
+ 		if (typeof releaseDate === 'number' && releaseDate > 0) {
+ 			this.releaseDateNode.textContent = localize('updateTooltip.releasedLabel', "Released {0}", formatDate(releaseDate));
+ 			this.releaseDateNode.style.display = '';
+@@ -390,8 +396,12 @@ export class UpdateTooltip extends Dispo
+ 			this.releaseDateNode.style.display = 'none';
+ 		}
+ 
+-		// Release notes button
+-		this.releaseNotesVersion = version ?? this.productService.version;
++		// Release notes button. Offered only when the product actually publishes release notes:
++		// without `releaseNotesUrl` the command it invokes fails with "this version does not have
++		// release notes online", so the button is a dead end rather than a feature.
++		this.releaseNotesVersion = this.productService.releaseNotesUrl
++			? (version ?? this.productService.wiversion ?? this.productService.version)
++			: undefined;
+ 		this.releaseNotesButton.style.display = this.releaseNotesVersion ? '' : 'none';
+ 		this.releaseNotesButton.style.marginRight = this.releaseNotesVersion ? 'auto' : '';
+ 		this.buttonBar.style.display = this.releaseNotesVersion ? '' : 'none';
