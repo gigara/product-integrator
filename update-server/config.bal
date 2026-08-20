@@ -131,9 +131,21 @@ configurable string[] clientTokens = [];
 // otherwise be deciding what every client installs. Artifact statements still prevent installing
 // unsigned code, but the decisions themselves would be the attacker's.
 //
-// Empty (the default) skips the check with a warning, which is what local development and the test
-// suite run with.
+// Leaving it empty is a deliberate act, not a default: see `allowUnsignedSource`.
 configurable string sourcePublicKey = "";
+
+// Escape hatch for running WITHOUT source-document verification.
+//
+// Signature checking used to be skipped whenever `sourcePublicKey` was empty, with only a log line
+// to say so. That is the wrong default for the most consequential check the server makes: an
+// operator who forgot the key got a server that quietly trusted whatever it fetched, and the only
+// evidence was one warning in a log nobody reads until something breaks.
+//
+// So the server now REFUSES TO START when no key is configured, unless this is explicitly set true.
+// Local development and the test suite set it; a real deployment must not. Failing at startup rather
+// than per request is deliberate — a misconfigured server should be obviously broken, not silently
+// permissive, and every other failure mode here already degrades to "no updates".
+configurable boolean allowUnsignedSource = false;
 
 // Cache-Control max-age (seconds) sent with manifest/signature responses.
 // Clients additionally revalidate with the ETag, so this can be modest.

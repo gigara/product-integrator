@@ -1,0 +1,7 @@
+# Test-suite configuration. Ballerina reads this for `bal test` only, never for a deployed server.
+#
+# The suite exercises decision logic against fixture documents that are not signed, so it waives
+# source verification explicitly. That waiver is what the startup guard demands: without a key and
+# without this flag the server refuses to start, so no deployment can end up trusting documents
+# unverified merely because someone forgot to configure a key.
+allowUnsignedSource = true

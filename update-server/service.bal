@@ -31,6 +31,25 @@ import ballerina/http;
 import ballerina/lang.array;
 import ballerina/log;
 
+// Refuse to start rather than run permissively. `check` here fails module init, so the server does
+// not come up at all when verification is neither configured nor explicitly waived.
+final boolean sourceTrustConfigured = check requireSourceTrust();
+
+isolated function requireSourceTrust() returns boolean|error {
+    if sourcePublicKey != "" {
+        return true;
+    }
+    if allowUnsignedSource {
+        log:printWarn("source document signature verification is DISABLED (allowUnsignedSource = true); "
+                + "every document this server reads is trusted unverified");
+        return false;
+    }
+    return error("sourcePublicKey is not configured. The server verifies each source document's "
+            + "signature before trusting it; without a key it would trust whatever it fetches. Set "
+            + "sourcePublicKey (base64 of cosign.pub), or set allowUnsignedSource = true to run "
+            + "without verification deliberately.");
+}
+
 listener http:Listener updateListener = new (port);
 
 service / on updateListener {
@@ -354,8 +373,8 @@ function readSelector(string channel, string fileName, string? clientVersion) re
 // Fails unless the document's detached signature verifies against the configured public key.
 // Skipped, with a warning, when no key is configured — the state local development and tests run in.
 function verifySource(string channel, string fileName, byte[] content) returns error? {
-    if sourcePublicKey == "" {
-        log:printWarn("source document signature verification disabled (no sourcePublicKey configured)");
+    if !sourceTrustConfigured {
+        // Only reachable with allowUnsignedSource = true; startup refuses otherwise.
         return ();
     }
     byte[] pemBytes = check array:fromBase64(sourcePublicKey);
