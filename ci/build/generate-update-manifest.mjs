@@ -50,6 +50,9 @@
 //     [--app-applies-to '>=5.0.0'] [--app-rollout 25] [--out source.json] \
 //     [--artifacts-base https://cdn/artifacts --mirror-dir artifacts-mirror] [--no-download]
 //
+//   Components-only (ship a component fix without re-releasing the app):
+//     ... --components-only --carry-apps-from previous-source.json [--requires-app-version 5.1.5]
+//
 // --no-download emits placeholder hashes (structure-only; for local validation, not for release).
 
 import { createHash } from 'node:crypto';
@@ -259,11 +262,49 @@ async function main() {
 	// So the app version these components support must be stated explicitly, and omitting it is an
 	// error rather than a silent default.
 	const componentsOnly = !!args['components-only'];
-	const requiresAppVersion = typeof args['requires-app-version'] === 'string' ? args['requires-app-version'] : undefined;
+
+	// A components-only publish REPLACES the document the index serves for its line, so publishing
+	// one with an empty apps[] would withdraw the app update the previous document offered: a client
+	// still on an older version of that line would silently never be offered the upgrade again.
+	// Carrying the previous document's app entries verbatim keeps that offer intact. Copying them is
+	// safe precisely because they describe artifacts that are already uploaded, hashed and signed —
+	// re-describing them requires none of those bytes.
+	const carryAppsFrom = typeof args['carry-apps-from'] === 'string' ? args['carry-apps-from'] : '';
+	let carriedApps = [];
+	if (carryAppsFrom) {
+		const previous = JSON.parse(readFileSync(carryAppsFrom, 'utf8'));
+		if (!Array.isArray(previous.apps)) {
+			throw new Error(`--carry-apps-from ${carryAppsFrom} has no apps array; it is not a source document.`);
+		}
+		carriedApps = previous.apps;
+		console.log(`carrying ${carriedApps.length} app entr${carriedApps.length === 1 ? 'y' : 'ies'} `
+			+ `from ${carryAppsFrom}: ${carriedApps.map(a => a.version).join(', ') || '(none)'}`);
+	}
+
+	// The app version the components require. Defaulting it to the version being built would be
+	// wrong for a components-only run: the config declares ">={appVersion}", so it would demand an
+	// app version nobody is running and every component would be withheld from every client — a
+	// publish that looks successful and delivers nothing. The carried document names the app that is
+	// actually released for this line, which is the correct default; an explicit value still wins,
+	// for a component that supports an older app than the newest one.
+	if (carryAppsFrom && !componentsOnly) {
+		throw new Error('--carry-apps-from is for --components-only runs. A run that builds an app '
+			+ 'generates its own entry, so carrying the previous one too would describe two app '
+			+ 'versions for the same line in one document.');
+	}
+
+	let requiresAppVersion = typeof args['requires-app-version'] === 'string' ? args['requires-app-version'] : undefined;
 	if (componentsOnly && !requiresAppVersion) {
-		throw new Error('--components-only requires --requires-app-version: the app version these '
-			+ 'components support. Without it, requires.app would name the version being built, which '
-			+ 'no client is running, and every component would be withheld.');
+		if (carriedApps.length === 1) {
+			requiresAppVersion = carriedApps[0].version;
+			console.log(`requires.app defaulted to the carried app version ${requiresAppVersion}`);
+		} else {
+			throw new Error('--components-only needs --requires-app-version: the app version these '
+				+ 'components support. Without it, requires.app would name the version being built, '
+				+ 'which no client is running, and every component would be withheld. It can be '
+				+ 'defaulted only from a carried document with exactly one app entry'
+				+ (carryAppsFrom ? ` (${carryAppsFrom} has ${carriedApps.length}).` : '; none was given.'));
+		}
 	}
 
 	const commonVars = {
@@ -425,10 +466,11 @@ async function main() {
 	// Core-app entry. `appliesTo` is a range over the CLIENT's CURRENT version, which is how one
 	// document serves several release lines: publish 5.1.z with appliesTo ">=5.1.0 <5.2.0" and a
 	// 5.2.x client is simply not matched by it.
-	const apps = [];
+	const apps = [...carriedApps];
 	const releaseBase = typeof args['app-release-base'] === 'string' ? args['app-release-base'].replace(/\/+$/, '') : '';
 	if (componentsOnly) {
-		console.log('components-only publish: no app entry, requires.app pinned to ' + requiresAppVersion);
+		console.log(`components-only publish: no app entry generated, ${apps.length} carried, `
+			+ `requires.app pinned to ${requiresAppVersion}`);
 	}
 	if (!componentsOnly && (releaseBase || artifactsBase)) {
 		const installerNames = config.app?.installers ?? {};
