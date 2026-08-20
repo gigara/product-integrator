@@ -256,7 +256,6 @@ jobs:
             EXTRA+=(--no-download)
           fi
           node ci/build/generate-update-manifest.mjs \
-            --channel "${CHANNEL}" \
             --sequence "${{ steps.plan.outputs.sequence }}" \
             --components-only \
             --carry-apps-from current.json \

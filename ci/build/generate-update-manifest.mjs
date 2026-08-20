@@ -45,7 +45,7 @@
 //
 // Usage:
 //   node ci/build/generate-update-manifest.mjs \
-//     --channel stable --sequence 42 [--targets darwin-arm64,win32-x64] \
+//     --sequence 42 [--targets darwin-arm64,win32-x64] \
 //     --app-version 5.0.1.0 [--app-commit SHA] [--app-release-base URL] \
 //     [--app-applies-to '>=5.0.0'] [--app-rollout 25] [--out source.json] \
 //     [--artifacts-base https://cdn/artifacts --mirror-dir artifacts-mirror] [--no-download]
@@ -207,7 +207,6 @@ function writeStatement(mirrorPath, { id, version, sha256, sizeBytes, requires }
 
 async function main() {
 	const args = parseArgs(process.argv.slice(2));
-	const channel = args.channel || 'stable';
 	const sequence = Number(args.sequence ?? 0);
 	const noDownload = !!args['no-download'];
 
@@ -555,15 +554,16 @@ async function main() {
 	}
 
 	const publishedAt = args['published-at'] || new Date().toISOString();
-	const expiresDays = Number(args['expires-days'] ?? 90);
-	const expiresAt = new Date(Date.parse(publishedAt) + expiresDays * 24 * 60 * 60 * 1000).toISOString();
 
+	// No channel field: a document's channel is the prefix it is stored under, and promotion copies
+	// documents between channels, so a field would have to be rewritten on every promotion or start
+	// lying. No expiry either — nothing enforced one, and an enforced one silently stops updates for
+	// a maintenance line on a date nobody remembers setting. Withdrawal is an explicit act: repoint
+	// the index, or revoke.
 	const source = {
-		schemaVersion: 2,
-		channel,
+		schemaVersion: 1,
 		sequence,
 		publishedAt,
-		expiresAt,
 		apps,
 		components
 	};

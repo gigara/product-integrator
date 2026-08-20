@@ -1679,7 +1679,6 @@ jobs:
             MIRROR_ARGS=(--artifacts-base "${{ secrets.WSO2_UPDATE_ARTIFACTS_URL }}" --mirror-dir artifacts-mirror)
           fi
           node ci/build/generate-update-manifest.mjs \
-            --channel "${CHANNEL}" \
             --targets "${{ steps.targets.outputs.targets }}" \
             --sequence "${SEQUENCE}" \
             --app-version "${{ needs.resolve-versions.outputs.integrator_version }}" \
