@@ -52,6 +52,7 @@
 //
 //   Components-only (ship a component fix without re-releasing the app):
 //     ... --components-only --carry-apps-from previous-source.json [--requires-app-version 5.1.5]
+//     [--carry-components wso2.wso2-integrator]   components this publish is not changing
 //
 // --no-download emits placeholder hashes (structure-only; for local validation, not for release).
 
@@ -281,12 +282,42 @@ async function main() {
 			+ `from ${carryAppsFrom}: ${carriedApps.map(a => a.version).join(', ') || '(none)'}`);
 	}
 
+	// Components this publish is NOT changing are copied from the previous document rather than
+	// resolved. Two reasons: the WI extension is built here and its version is a build timestamp, so
+	// rebuilding it to ship an unrelated runtime fix would push a new extension to every client for
+	// nothing; and skipping the build is what makes a downloaded-component-only publish cheap. The
+	// entry is copied whole, so the document still describes the full set.
+	const carryComponentIds = new Set(
+		(typeof args['carry-components'] === 'string' ? args['carry-components'] : '')
+			.split(',').map(id => id.trim()).filter(Boolean));
+	if (carryComponentIds.size > 0 && !carryAppsFrom) {
+		throw new Error('--carry-components needs --carry-apps-from: the document to copy those entries from.');
+	}
+
 	// The app version the components require. Defaulting it to the version being built would be
 	// wrong for a components-only run: the config declares ">={appVersion}", so it would demand an
 	// app version nobody is running and every component would be withheld from every client — a
 	// publish that looks successful and delivers nothing. The carried document names the app that is
 	// actually released for this line, which is the correct default; an explicit value still wins,
 	// for a component that supports an older app than the newest one.
+	if (carryComponentIds.size > 0) {
+		const previous = JSON.parse(readFileSync(carryAppsFrom, 'utf8'));
+		const available = new Set((previous.components ?? []).map(c => c.id));
+		const configured = new Set(config.components.map(c => c.id));
+		for (const id of carryComponentIds) {
+			// Both checks catch a typo, which would otherwise drop the component from the document
+			// silently — and the document REPLACES the one clients are served, so a dropped
+			// component simply stops being offered.
+			if (!configured.has(id)) {
+				throw new Error(`--carry-components names '${id}', which is not a component in the config.`);
+			}
+			if (!available.has(id)) {
+				throw new Error(`--carry-components names '${id}', which the previous document does not `
+					+ `offer, so there is no entry to copy. Publish it normally instead.`);
+			}
+		}
+	}
+
 	if (carryAppsFrom && !componentsOnly) {
 		throw new Error('--carry-apps-from is for --components-only runs. A run that builds an app '
 			+ 'generates its own entry, so carrying the previous one too would describe two app '
@@ -388,7 +419,20 @@ async function main() {
 	}
 
 	const components = [];
+	if (carryComponentIds.size > 0) {
+		const previous = JSON.parse(readFileSync(carryAppsFrom, 'utf8'));
+		// Every entry for the id, so a component published as several variants keeps all of them.
+		for (const entry of previous.components ?? []) {
+			if (carryComponentIds.has(entry.id)) {
+				components.push(entry);
+				console.log(`carrying component ${entry.id} ${entry.version} from the previous document`);
+			}
+		}
+	}
 	for (const component of declared) {
+		if (carryComponentIds.has(component.id)) {
+			continue; // carried above, not rebuilt or re-mirrored
+		}
 		// Components that only exist as a repo-local build artifact (no public source URL) can only
 		// be published when mirroring is on. Skip LOUDLY rather than failing the whole document.
 		if (component.sourceFile && !artifactsBase) {

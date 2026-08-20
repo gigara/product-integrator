@@ -4,8 +4,10 @@
 # extension fix used to cost a full VS Code compile, both macOS installer builds, and a release tag
 # for a version that is not an app release. Only ONE component is actually built in this repo (the WI
 # extension); every other component is downloaded from upstream at the version pinned in
-# ci/build/component-versions.properties. So a component-only publish needs that one build and
-# nothing else.
+# ci/build/component-versions.properties. So publishing any of those eight is just an edit to that
+# file on the ref you dispatch, and publishing the WI extension adds one project build -- which
+# `rebuild_wi_extension: false` skips when the fix is not in the extension, carrying its previous
+# entry forward instead of pushing an unrelated new build to every client.
 #
 # How it lands: this publishes a NEW source document and repoints one index line at it, carrying the
 # previous document's app entries forward. Carrying them is not optional — the index serves one
@@ -35,6 +37,24 @@ on:
         description: 'App version these components require. Defaults to the app the line already serves.'
         type: string
         default: ''
+      rebuild_wi_extension:
+        description: 'Rebuild the WI extension. Turn off for a fix in a downloaded component only - its previous entry is carried forward.'
+        type: boolean
+        default: true
+      carry_components:
+        description: 'Component ids to copy from the current document instead of re-publishing, e.g. jre,icp. Saves re-mirroring what did not change.'
+        type: string
+        default: ''
+      ballerina_extension_source:
+        description: 'Where to publish the Ballerina extension from. Must match what the app build bundled.'
+        type: choice
+        options: [github, marketplace]
+        default: github
+      mi_extension_source:
+        description: 'Where to publish the MI extension from. Must match what the app build bundled.'
+        type: choice
+        options: [github, marketplace]
+        default: github
       ref:
         description: 'Branch or tag to publish component versions from (default: this workflow ref)'
         type: string
@@ -122,18 +142,21 @@ jobs:
       # is where package-vsix.js takes the .vsix name from and where the generator reads the
       # component's version. Not committed — this run publishes it, it does not change the branch.
       - name: Stamp the extension version
+        if: ${{ inputs.rebuild_wi_extension }}
         run: |
           chmod +x ./ci/build/apply-version.sh
           ./ci/build/apply-version.sh --force-extension
           echo "wi.extension.version=$(grep '^wi.extension.version' ci/build/component-versions.properties)"
 
       - name: Copy .env.example to .env
+        if: ${{ inputs.rebuild_wi_extension }}
         run: |
           find . -type f -name ".env.example" | while read -r example; do
             cp "${example}" "$(dirname "${example}")/.env"
           done
 
       - name: Setup WI
+        if: ${{ inputs.rebuild_wi_extension }}
         uses: gigara/setup-rush@v1.2.0
         with:
           pnpm: 10.11.0
@@ -141,6 +164,7 @@ jobs:
       # --to wso2-integrator: the extension and the workspace projects it depends on, not the whole
       # monorepo. lib/vscode is not a rush project, so no patches are needed here.
       - name: Build WI extension
+        if: ${{ inputs.rebuild_wi_extension }}
         env:
           # scripts/download-choreo-cli.js calls the GitHub API; unauthenticated it hits the 60/hour
           # limit and fails the build with a 403.
@@ -148,6 +172,7 @@ jobs:
         run: node common/scripts/install-run-rush.js build --to wso2-integrator --verbose
 
       - name: Verify the extension VSIX was produced
+        if: ${{ inputs.rebuild_wi_extension }}
         run: |
           set -euo pipefail
           # The generator resolves this component from a local file (config `sourceFile`); a missing
@@ -211,6 +236,19 @@ jobs:
           if [ -n "${REQUIRES_APP}" ]; then
             EXTRA+=(--requires-app-version "${REQUIRES_APP}")
           fi
+          # Publish each extension from the SAME source the app build bundled, so the artifact a
+          # client is offered cannot diverge from the one it already has.
+          EXTRA+=(--source-flavors "wso2.ballerina=${{ inputs.ballerina_extension_source }},wso2.micro-integrator=${{ inputs.mi_extension_source }}")
+          # Anything not being changed is copied from the current document rather than re-resolved
+          # and re-mirrored. The WI extension gets its own toggle because carrying it is also what
+          # lets the build be skipped entirely.
+          CARRY="${{ inputs.carry_components }}"
+          if [ "${{ inputs.rebuild_wi_extension }}" != "true" ]; then
+            CARRY="${CARRY:+${CARRY},}wso2.wso2-integrator"
+          fi
+          if [ -n "${CARRY}" ]; then
+            EXTRA+=(--carry-components "${CARRY}")
+          fi
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             # Structure only: hashing every artifact means downloading the JRE and both runtimes,
             # which a dry run does not need to tell you what would be published.
@@ -248,10 +286,17 @@ jobs:
                        f"It replaces that document, so those components would stop being offered.")
           added = sorted(new_ids - old_ids)
           print(f"{len(new_ids)} components covered" + (f"; new: {', '.join(added)}" if added else ""))
+          changed = 0
           for c in sorted(new.get("components", []), key=lambda c: c["id"]):
               was = next((o.get("version") for o in old.get("components", []) if o["id"] == c["id"]), None)
-              mark = " <-- changed" if was and was != c.get("version") else ""
-              print(f"  {c['id']}: {was} -> {c.get('version')}{mark}")
+              differs = bool(was) and was != c.get("version")
+              changed += differs
+              print(f"  {c['id']}: {was} -> {c.get('version')}" + (" <-- changed" if differs else ""))
+          if not changed and not added:
+              # Not an error: re-publishing is the fix when a mirrored artifact was bad. But far more
+              # often it means the version bump is not on the ref that was dispatched.
+              print("::warning::no component version changed. Clients will be offered nothing new. "
+                    "Check the version bump is committed on the ref you dispatched.")
           PY
 
       - name: Dry run — nothing published
