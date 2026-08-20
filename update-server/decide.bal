@@ -474,7 +474,7 @@ isolated function decideUpdates(SourceManifest src, UpdateCheckRequest req,
     }
     UpdateCheckResponse response = {
         components: offers,
-        checkedAt: src.publishedAt,
+        publishedAt: src.publishedAt,
         sequence: src.sequence
     };
     if app is AppOffer {

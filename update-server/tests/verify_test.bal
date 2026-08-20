@@ -20,6 +20,9 @@ import ballerina/test;
 // A real ECDSA-P256/SHA-256 signature over TEST_DOC, produced the same way cosign signs a blob.
 const string TEST_PUBLIC_KEY_B64 = "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUZrd0V3WUhLb1pJemowQ0FRWUlLb1pJemowREFRY0RRZ0FFMGlzVGtvb2J3NFJ0ZTJudzV1SkxHWUNTbUptYwpCcHhUb1Rxd2pWc3VIL2l2bGV6WjBMMDZNby94Tk5GZ1Qrd3IrK3BYcm41S2xVYlBkY0JreEg4cmF3PT0KLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg==";
 const string TEST_SIGNATURE_B64 = "MEQCIC89hRN2ZrHjkDdcXDf2Y1nK2EsWD+dFIYsRYe5I8EYFAiByLxV6nKWxrG0H5PFS8fpqMnKIAZz2m+SDcDSWw+7tNw==";
+// The exact bytes the signature above was produced over. NOT a schema-valid source document, and it
+// must not be "corrected" into one: the signature is over these bytes, so editing the string breaks
+// the test it exists for. Schema shape is covered by the decide/service tests.
 const string TEST_DOC = "{\"schemaVersion\":2,\"channel\":\"stable\",\"sequence\":1}";
 
 function testPublicKeyPem() returns string|error {

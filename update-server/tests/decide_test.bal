@@ -17,8 +17,7 @@
 import ballerina/test;
 
 function sampleSource() returns SourceManifest => {
-    schemaVersion: 2,
-    channel: "stable",
+    schemaVersion: 1,
     sequence: 10,
     publishedAt: "2026-08-13T00:00:00Z",
     apps: [
@@ -243,8 +242,7 @@ function testSquirrelPicksTheClientsLineAndOnlyWhereAPayloadExists() {
 // wso2.ballerina ships twice: 5.12.x for the 5.1 line, 5.13.x for 5.2. A third component depends on
 // it, so this also pins down WHICH version a dependency is resolved against.
 function multiLineSource() returns SourceManifest => {
-    schemaVersion: 2,
-    channel: "stable",
+    schemaVersion: 1,
     sequence: 20,
     publishedAt: "2026-08-13T00:00:00Z",
     apps: [],

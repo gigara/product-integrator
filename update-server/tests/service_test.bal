@@ -47,7 +47,7 @@ function testPublishDisabledByDefault() returns error? {
     // adminToken is empty in tests, so publish must be disabled — and 404, not 401, so an
     // unconfigured deployment does not advertise that the endpoint exists at all.
     http:Request req = new;
-    req.setJsonPayload({schemaVersion: 2});
+    req.setJsonPayload({schemaVersion: 1});
     http:Response res = check testClient->put("/api/v1/updates/stable/source.json", req);
     test:assertEquals(res.statusCode, 404);
 }
@@ -129,8 +129,7 @@ function testSquirrelFeedFlow() returns error? {
         check file:createDir(dir, file:RECURSIVE);
     }
     json src = {
-        schemaVersion: 2,
-        channel: "insider",
+        schemaVersion: 1,
         sequence: 7,
         publishedAt: "2026-08-13T00:00:00Z",
         apps: [
@@ -187,8 +186,7 @@ function testSquirrelFeedWithholdsCrossMinorUpdate() returns error? {
     // No `appliesTo` here on purpose: this exercises the standalone minor-line gate, which is what
     // still protects a document that does not declare its line.
     json src = {
-        schemaVersion: 2,
-        channel: "beta",
+        schemaVersion: 1,
         sequence: 9,
         publishedAt: "2026-08-13T00:00:00Z",
         apps: [
