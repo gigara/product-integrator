@@ -94,6 +94,23 @@ jobs:
           ref: ${{ inputs.ref || github.ref }}
           submodules: recursive
 
+      # This workflow file lives on the default branch so GitHub will register it for dispatch, but
+      # the update-publishing tooling it drives is not merged there yet. Dispatched with the default
+      # ref it would fail deep inside a step with "module not found"; this says what to do instead.
+      - name: Check this ref carries the publish tooling
+        run: |
+          set -euo pipefail
+          missing=()
+          for f in ci/build/generate-update-manifest.mjs ci/build/update-manifest.config.json \
+                   ci/build/plan-component-publish.py ci/build/upsert-source-index.py; do
+            [ -f "$f" ] || missing+=("$f")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            printf '::error::%s is not on this ref\n' "${missing[@]}" >&2
+            echo "::error::Dispatch this workflow with the ref that carries the update mechanism (Run workflow -> Branch), not the default branch." >&2
+            exit 1
+          fi
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
