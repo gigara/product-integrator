@@ -12,11 +12,13 @@ Two phases, because the document to read is named by the index:
   plan     --index index.json --current current.json --stamp 2608201130
                                                                   -> current_sequence=, doc=, app_version=
 
-Output is KEY=value lines, for appending to $GITHUB_OUTPUT.
+Output is KEY=value lines meant to be sourced by the caller, so values are shell-quoted: a range
+selector ('>=5.1.0 <5.2.0') read from the index would otherwise redirect when sourced.
 """
 import argparse
 import json
 import re
+import shlex
 import sys
 
 # Matches the update server's isSourceFile() guard: a document it will refuse to serve is worse than
@@ -53,6 +55,11 @@ def resolve_selector(index, selector):
     return selector, current
 
 
+def emit(**values):
+    for key, value in values.items():
+        print(f"{key}={shlex.quote(str(value))}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("phase", choices=["resolve", "plan"])
@@ -66,8 +73,7 @@ def main():
     selector, current_doc = resolve_selector(index, args.selector)
 
     if args.phase == "resolve":
-        print(f"selector={selector}")
-        print(f"current_doc={current_doc}")
+        emit(selector=selector, current_doc=current_doc)
         return
 
     if not args.current:
@@ -94,9 +100,7 @@ def main():
                  f"serves source-<segment>.json where <segment> is [A-Za-z0-9._+-]. Give a "
                  f"--selector that is an exact version or a .x wildcard.")
 
-    print(f"current_sequence={current_sequence}")
-    print(f"doc=source-{label}.json")
-    print(f"app_version={app_version}")
+    emit(current_sequence=current_sequence, doc=f"source-{label}.json", app_version=app_version)
 
 
 if __name__ == "__main__":
