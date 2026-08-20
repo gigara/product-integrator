@@ -268,7 +268,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Updat
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Update.ts
-@@ -0,0 +1,224 @@
+@@ -0,0 +1,242 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -425,11 +425,29 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Updat
 +	Error = 'error'
 +}
 +
++/**
++ * What the update UI needs to describe an in-flight component download.
++ *
++ * A component update is a batch, so a percentage alone is not enough to be honest about progress:
++ * `index`/`total` say which of several artifacts is moving, and the byte counts describe only the
++ * current one. `totalBytes` is what the server's offer claimed, so it may be absent — the UI must
++ * cope with an indeterminate download rather than rendering a bar it cannot fill.
++ */
++export interface IWso2DownloadProgress {
++	readonly id: string;
++	readonly version: string;
++	/** 1-based position within this batch. */
++	readonly index: number;
++	readonly total: number;
++	readonly receivedBytes: number;
++	readonly totalBytes?: number;
++}
++
 +export type Wso2UpdateState =
 +	| { readonly type: Wso2UpdateStateType.Idle }
 +	| { readonly type: Wso2UpdateStateType.CheckingForUpdates; readonly explicit: boolean }
 +	| { readonly type: Wso2UpdateStateType.UpdatesAvailable; readonly updates: readonly IWso2AvailableUpdate[]; readonly appUpdate?: IWso2AvailableAppUpdate }
-+	| { readonly type: Wso2UpdateStateType.Downloading }
++	| { readonly type: Wso2UpdateStateType.Downloading; readonly progress?: IWso2DownloadProgress }
 +	| { readonly type: Wso2UpdateStateType.Downloaded; readonly stagedExtensions: readonly IWso2StagedExtension[]; readonly restartRequired: boolean }
 +	| { readonly type: Wso2UpdateStateType.Error; readonly message: string };
 +
@@ -497,7 +515,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/wso2ComponentUpdateService.ts
-@@ -0,0 +1,1254 @@
+@@ -0,0 +1,1326 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -578,6 +596,12 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 + * (refused HTTP/2 stream, reset connection, 5xx, 429) are usually a server or link under momentary
 + * pressure, which an instant retry only adds to.
 + */
++/**
++ * Minimum gap between download-progress events. Chosen to be visibly live without making the title
++ * bar re-render on every network chunk.
++ */
++const PROGRESS_INTERVAL_MS = 400;
++
 +const DOWNLOAD_ATTEMPTS = 3;
 +const DOWNLOAD_RETRY_DELAYS_MS = [3000, 10000];
 +
@@ -619,6 +643,54 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		this._state = state;
 +		this._onStateChange.fire(state);
 +	}
++
++	/**
++	 * Publishes download progress, at most every PROGRESS_INTERVAL_MS.
++	 *
++	 * Every emission crosses the IPC boundary and re-renders the title bar, and a fast link delivers
++	 * chunks far more often than a user can perceive — so an unthrottled feed would spend more effort
++	 * reporting the download than performing it. `force` is for the transitions that must not be
++	 * dropped: the first byte of a component, and its completion.
++	 */
++	private reportProgress(force = false): void {
++		const active = this.activeDownload;
++		if (!active || this._state.type !== Wso2UpdateStateType.Downloading) {
++			return;
++		}
++		const now = Date.now();
++		if (!force && now - this.lastProgressEmit < PROGRESS_INTERVAL_MS) {
++			return;
++		}
++		this.lastProgressEmit = now;
++		this.setState({
++			type: Wso2UpdateStateType.Downloading,
++			progress: {
++				id: active.id,
++				version: active.version,
++				index: active.index,
++				total: active.total,
++				receivedBytes: active.receivedBytes,
++				...(active.totalBytes !== undefined ? { totalBytes: active.totalBytes } : {})
++			}
++		});
++	}
++
++	/**
++	 * The download currently in flight, so byte counts can be attributed to a component without
++	 * threading a callback through downloadAndVerify() and every caller. Safe as shared state
++	 * because downloads run under runExclusive(), so only one is ever active.
++	 */
++	private activeDownload: {
++		readonly id: string;
++		readonly version: string;
++		readonly index: number;
++		readonly total: number;
++		readonly totalBytes?: number;
++		receivedBytes: number;
++	} | undefined;
++
++	/** Last progress emission, to rate-limit state events crossing the IPC boundary. */
++	private lastProgressEmit = 0;
 +
 +	/** The server's last answer, retained so downloadUpdates() can act on the offered set. */
 +	private lastResponse: IWso2UpdateCheckResponse | undefined;
@@ -1026,7 +1098,19 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +
 +		try {
 +			const localBefore = readLocalManifest(this.componentsHome);
-+			for (const component of targetComponents) {
++			for (const [position, component] of targetComponents.entries()) {
++				// Attribute the bytes about to move to this component. `sizeBytes` is what the offer
++				// claimed; when it is absent the UI shows an indeterminate download rather than
++				// inventing a denominator.
++				this.activeDownload = {
++					id: component.id,
++					version: component.version,
++					index: position + 1,
++					total: targetComponents.length,
++					...(component.artifact.sizeBytes !== undefined ? { totalBytes: component.artifact.sizeBytes } : {}),
++					receivedBytes: 0
++				};
++				this.reportProgress(true);
 +				if (component.kind === 'extension') {
 +					const vsixPath = await this.downloadExtension(component);
 +					stagedExtensions.push({ id: component.id, version: component.version, vsixPath });
@@ -1043,8 +1127,10 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +					restartRequired = true;
 +				}
 +			}
++			this.activeDownload = undefined;
 +			this.setState({ type: Wso2UpdateStateType.Downloaded, stagedExtensions, restartRequired });
 +		} catch (err) {
++			this.activeDownload = undefined;
 +			this.logService.error('[wso2Update] download/apply failed', err);
 +			this.setState({ type: Wso2UpdateStateType.Error, message: String(err) });
 +		}
@@ -1295,6 +1381,10 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +			listenStream(context.stream, {
 +				onData: chunk => {
 +					hash.update(chunk.buffer);
++					if (this.activeDownload) {
++						this.activeDownload.receivedBytes += chunk.buffer.byteLength;
++						this.reportProgress();
++					}
 +					if (!out.write(chunk.buffer)) {
 +						// Honor disk backpressure: pause the network stream until the file
 +						// drains, otherwise a slow disk lets a multi-hundred-MB download
@@ -2253,7 +2343,7 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser/wso2Update.contribution.ts
-@@ -0,0 +1,504 @@
+@@ -0,0 +1,484 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -2272,17 +2362,12 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 + * under the License.
 + */
 +
-+import * as dom from '../../../../base/browser/dom.js';
-+import { BaseActionViewItem, IBaseActionViewItemOptions } from '../../../../base/browser/ui/actionbar/actionViewItems.js';
-+import { IAction } from '../../../../base/common/actions.js';
 +import { raceTimeout } from '../../../../base/common/async.js';
 +import { Codicon } from '../../../../base/common/codicons.js';
 +import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 +import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
-+import { ThemeIcon } from '../../../../base/common/themables.js';
 +import { URI } from '../../../../base/common/uri.js';
 +import { localize, localize2 } from '../../../../nls.js';
-+import { IActionViewItemService } from '../../../../platform/actions/browser/actionViewItemService.js';
 +import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
 +import './media/wso2Update.css';
 +import { ICommandService } from '../../../../platform/commands/common/commands.js';
@@ -2301,6 +2386,7 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
 +import { IWorkbenchExtensionManagementService } from '../../../services/extensionManagement/common/extensionManagement.js';
 +import { IHostService } from '../../../services/host/browser/host.js';
++import { setComponentUpdateSummary } from '../../update/browser/updateTitleBarEntry.js';
 +
 +const WSO2_UPDATES_AVAILABLE_KEY = 'wso2UpdatesAvailable';
 +const WSO2_UPDATES_AVAILABLE = new RawContextKey<boolean>(WSO2_UPDATES_AVAILABLE_KEY, false);
@@ -2534,11 +2620,10 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +			title: localize2('wso2.updates.titleBarIndicator', "Update WSO2 Integrator Components"),
 +			icon: Codicon.cloudDownload,
 +			f1: false,
-+			menu: [{
-+				id: MenuId.TitleBarAdjacentCenter,
-+				order: 0,
-+				when: ContextKeyExpr.and(ContextKeyExpr.has(WSO2_UPDATES_AVAILABLE_KEY), ContextKeyExpr.notEquals('config.wso2.updates.titleBar', false))
-+			}]
++			// No menu placement: components share the core app's title-bar indicator (see
++			// setComponentUpdateSummary) rather than adding a second "Update" button next to it. The
++			// action itself stays so the Components view and the tooltip can still invoke it.
++			menu: []
 +		});
 +	}
 +	run(accessor: ServicesAccessor): Promise<unknown> {
@@ -2551,23 +2636,6 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +registerAction2(ShowComponentsAction);
 +registerAction2(UpdateIndicatorAction);
 +
-+/**
-+ * Renders the title-bar update indicator as a prominent (blue) button, matching
-+ * the built-in VS Code update indicator. Clicking runs the indicator action.
-+ */
-+class Wso2UpdateIndicatorViewItem extends BaseActionViewItem {
-+	constructor(action: IAction, options: IBaseActionViewItemOptions) {
-+		super(undefined, action, options);
-+	}
-+
-+	override render(container: HTMLElement): void {
-+		super.render(container);
-+		const indicator = dom.append(container, dom.$('.wso2-update-indicator'));
-+		dom.append(indicator, dom.$(ThemeIcon.asCSSSelector(Codicon.cloudDownload)));
-+		const label = dom.append(indicator, dom.$('.indicator-label'));
-+		label.textContent = localize('wso2.updates.updateLabel', "Update");
-+	}
-+}
 +
 +//#endregion
 +
@@ -2588,7 +2656,6 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +		@IContextKeyService contextKeyService: IContextKeyService,
 +		@IHostService private readonly hostService: IHostService,
 +		@IWorkbenchExtensionManagementService private readonly extensionManagementService: IWorkbenchExtensionManagementService,
-+		@IActionViewItemService actionViewItemService: IActionViewItemService,
 +		@IDialogService private readonly dialogService: IDialogService,
 +		@ILogService private readonly logService: ILogService,
 +		@IUpdateService stockUpdateService: IUpdateService
@@ -2596,13 +2663,6 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +		super();
 +
 +		this.availableContext = WSO2_UPDATES_AVAILABLE.bindTo(contextKeyService);
-+
-+		// Render the title-bar indicator as the prominent blue button.
-+		this._register(actionViewItemService.register(
-+			MenuId.TitleBarAdjacentCenter,
-+			'wso2.updates.titleBarIndicator',
-+			(action, options) => new Wso2UpdateIndicatorViewItem(action, options)
-+		));
 +
 +		this._register(this.updateService.onStateChange(state => this.onStateChange(state)));
 +		this.updateService.getState().then(state => this.onStateChange(state, true), err => this.logService.error('[wso2Update] getState failed', err));
@@ -2671,6 +2731,16 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +	}
 +
 +	private onStateChange(state: Wso2UpdateState, isInitial = false): void {
++		// Feed the SHARED title-bar indicator and tooltip. Components used to own a second button
++		// beside the core app's, so a machine with both pending showed two things labelled "Update";
++		// and downloads were invisible, so hundreds of megabytes moved with nothing on screen.
++		setComponentUpdateSummary(
++			state.type === Wso2UpdateStateType.Downloading
++				? { available: 0, progress: state.progress }
++				: state.type === Wso2UpdateStateType.UpdatesAvailable
++					? { available: state.updates.length, commandId: 'wso2.updates.applyAll' }
++					: undefined);
++
 +		this.availableContext.set(state.type === Wso2UpdateStateType.UpdatesAvailable);
 +
 +		// The main process persists its state across a window reload. On the initial
@@ -3389,7 +3459,34 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/update/browser/upd
 ===================================================================
 --- product-integrator.orig/lib/vscode/src/vs/workbench/contrib/update/browser/updateTooltip.ts
 +++ product-integrator/lib/vscode/src/vs/workbench/contrib/update/browser/updateTooltip.ts
-@@ -137,7 +137,10 @@ export class UpdateTooltip extends Dispo
+@@ -15,6 +15,7 @@ import { IHoverService } from '../../../
+ import { IMeteredConnectionService } from '../../../../platform/meteredConnection/common/meteredConnection.js';
+ import { IProductService } from '../../../../platform/product/common/productService.js';
+ import { AvailableForDownload, Disabled, DisablementReason, Downloaded, Downloading, Idle, IUpdate, Overwriting, Ready, Restarting, State, StateType, Updating } from '../../../../platform/update/common/update.js';
++import { IComponentUpdateSummary } from './updateTitleBarEntry.js';
+ import { ShowCurrentReleaseNotesActionId } from '../common/update.js';
+ import { computeDownloadSpeed, computeDownloadTimeRemaining, computeProgressPercent, formatBytes, formatDate, formatTimeRemaining, tryParseDate } from '../common/updateUtils.js';
+ import './media/updateTooltip.css';
+@@ -58,6 +59,10 @@ export class UpdateTooltip extends Dispo
+ 
+ 	private releaseNotesVersion: string | undefined;
+ 
++	/** Bundled-component download in flight, rendered alongside whatever the core app is doing. */
++	private readonly componentNode: HTMLElement;
++	private componentSummary: IComponentUpdateSummary | undefined;
++
+ 	constructor(
+ 		@IClipboardService private readonly clipboardService: IClipboardService,
+ 		@ICommandService private readonly commandService: ICommandService,
+@@ -112,6 +117,7 @@ export class UpdateTooltip extends Dispo
+ 
+ 		// State-specific message
+ 		this.messageNode = dom.append(this.domNode, dom.$('.state-message'));
++		this.componentNode = dom.append(this.domNode, dom.$('.state-message.component-progress'));
+ 
+ 		// Button bar
+ 		this.buttonBar = dom.append(this.domNode, dom.$('.button-bar'));
+@@ -137,7 +143,10 @@ export class UpdateTooltip extends Dispo
  	}
  
  	private updateCurrentVersion() {
@@ -3401,7 +3498,74 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/update/browser/upd
  		if (productVersion) {
  			const currentCommitId = this.productService.commit?.substring(0, 7);
  			this.currentVersionNode.textContent = currentCommitId
-@@ -381,8 +384,11 @@ export class UpdateTooltip extends Dispo
+@@ -156,6 +165,7 @@ export class UpdateTooltip extends Dispo
+ 		this.speedInfoNode.textContent = '';
+ 		this.timeRemainingNode.textContent = '';
+ 		this.messageNode.style.display = 'none';
++		this.componentNode.style.display = 'none';
+ 		this.actionButton.style.display = 'none';
+ 		this.actionButton.dataset.commandId = '';
+ 		this.releaseNotesButton.style.marginRight = '';
+@@ -198,6 +208,58 @@ export class UpdateTooltip extends Dispo
+ 				this.renderRestarting(state);
+ 				break;
+ 		}
++		// Component progress is driven by a different service than the core-app state above, so it is
++		// re-applied after every render rather than being owned by one of the cases.
++		this.renderComponentProgress();
++	}
++
++	/**
++	 * Shows the component download in the same popup as the core-app update.
++	 *
++	 * Components used to download in complete silence — the only sign anything was happening was the
++	 * machine getting busy. They are hundreds of megabytes, so silence reads as a hang.
++	 */
++	public setComponentSummary(summary: IComponentUpdateSummary | undefined): void {
++		this.componentSummary = summary;
++		this.renderComponentProgress();
++	}
++
++	private renderComponentProgress(): void {
++		const summary = this.componentSummary;
++		if (!summary) {
++			this.componentNode.style.display = 'none';
++			return;
++		}
++		dom.clearNode(this.componentNode);
++		// Offered but not started: say how many, so the shared indicator is not ambiguous about
++		// whether "Update" refers to the app or to its components.
++		const progress = summary.progress;
++		if (!progress) {
++			if (summary.available < 1) {
++				this.componentNode.style.display = 'none';
++				return;
++			}
++			const availableIcon = dom.append(this.componentNode, dom.$('.state-message-icon'));
++			availableIcon.classList.add(...ThemeIcon.asClassNameArray(Codicon.cloudDownload));
++			dom.append(this.componentNode, document.createTextNode(summary.available === 1
++				? localize('updateTooltip.componentAvailableOne', "1 component update available")
++				: localize('updateTooltip.componentAvailableMany', "{0} component updates available", summary.available)));
++			this.componentNode.style.display = '';
++			return;
++		}
++		const icon = dom.append(this.componentNode, dom.$('.state-message-icon'));
++		icon.classList.add(...ThemeIcon.asClassNameArray(Codicon.cloudDownload));
++		// A batch says "1 of 3"; a single component says nothing, because "1 of 1" is noise.
++		const scope = progress.total > 1
++			? localize('updateTooltip.componentScope', "{0} ({1} of {2})", progress.id, progress.index, progress.total)
++			: progress.id;
++		const text = progress.totalBytes
++			? localize('updateTooltip.componentProgress', "Downloading {0} - {1} of {2}",
++				scope, formatBytes(progress.receivedBytes), formatBytes(progress.totalBytes))
++			: localize('updateTooltip.componentProgressUnknownSize', "Downloading {0} - {1}",
++				scope, formatBytes(progress.receivedBytes));
++		dom.append(this.componentNode, document.createTextNode(text));
++		this.componentNode.style.display = '';
+ 	}
+ 
+ 	private renderUninitialized() {
+@@ -381,8 +443,11 @@ export class UpdateTooltip extends Dispo
  			this.latestVersionNode.parentElement!.style.display = 'none';
  		}
  
@@ -3415,7 +3579,7 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/update/browser/upd
  		if (typeof releaseDate === 'number' && releaseDate > 0) {
  			this.releaseDateNode.textContent = localize('updateTooltip.releasedLabel', "Released {0}", formatDate(releaseDate));
  			this.releaseDateNode.style.display = '';
-@@ -390,8 +396,12 @@ export class UpdateTooltip extends Dispo
+@@ -390,8 +455,12 @@ export class UpdateTooltip extends Dispo
  			this.releaseDateNode.style.display = 'none';
  		}
  
@@ -3430,3 +3594,162 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/update/browser/upd
  		this.releaseNotesButton.style.display = this.releaseNotesVersion ? '' : 'none';
  		this.releaseNotesButton.style.marginRight = this.releaseNotesVersion ? 'auto' : '';
  		this.buttonBar.style.display = this.releaseNotesVersion ? '' : 'none';
+Index: product-integrator/lib/vscode/src/vs/workbench/contrib/update/browser/updateTitleBarEntry.ts
+===================================================================
+--- product-integrator.orig/lib/vscode/src/vs/workbench/contrib/update/browser/updateTitleBarEntry.ts
++++ product-integrator/lib/vscode/src/vs/workbench/contrib/update/browser/updateTitleBarEntry.ts
+@@ -4,6 +4,7 @@
+  *--------------------------------------------------------------------------------------------*/
+ 
+ import * as dom from '../../../../base/browser/dom.js';
++import { Emitter } from '../../../../base/common/event.js';
+ import { BaseActionViewItem, IBaseActionViewItemOptions } from '../../../../base/browser/ui/actionbar/actionViewItems.js';
+ import { IManagedHoverContent } from '../../../../base/browser/ui/hover/hover.js';
+ import { IAction, WorkbenchActionExecutedClassification, WorkbenchActionExecutedEvent } from '../../../../base/common/actions.js';
+@@ -11,6 +12,7 @@ import { Disposable } from '../../../../
+ import { autorun } from '../../../../base/common/observable.js';
+ import { isWeb } from '../../../../base/common/platform.js';
+ import { localize } from '../../../../nls.js';
++import { IWso2DownloadProgress } from '../../../../platform/wso2Update/common/wso2Update.js';
+ import { IActionViewItemService } from '../../../../platform/actions/browser/actionViewItemService.js';
+ import { Action2, IMenuItem, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
+ import { ICommandService } from '../../../../platform/commands/common/commands.js';
+@@ -47,6 +49,33 @@ const DETAILED_STATES: readonly StateTyp
+  */
+ let additionalMenuPlacement: { readonly menuId: MenuId; readonly item: Omit<IMenuItem, 'command'> } | undefined;
+ 
++/**
++ * Bundled-component download progress, surfaced in the same title-bar indicator and tooltip as the
++ * core-app update so there is one place that means "an update is happening".
++ *
++ * Pushed in rather than injected: this file ships in the web build, where the component update
++ * service does not exist, and a constructor dependency would fail to resolve before the isWeb guard
++ * could skip it. The desktop-only contribution that owns that service calls in here instead — the
++ * same shape as registerUpdateTitleBarMenuPlacement below.
++ */
++export interface IComponentUpdateSummary {
++	/** Components currently offered but not yet taken. */
++	readonly available: number;
++	/** Set while an artifact is downloading. */
++	readonly progress?: IWso2DownloadProgress;
++	/** Command to run when the user clicks the indicator, when there is something to do. */
++	readonly commandId?: string;
++}
++
++let currentComponentSummary: IComponentUpdateSummary | undefined;
++const componentSummaryEmitter = new Emitter<IComponentUpdateSummary | undefined>();
++const onDidChangeComponentUpdateSummary = componentSummaryEmitter.event;
++
++export function setComponentUpdateSummary(summary: IComponentUpdateSummary | undefined): void {
++	currentComponentSummary = summary;
++	componentSummaryEmitter.fire(summary);
++}
++
+ export function registerUpdateTitleBarMenuPlacement(menuId: MenuId, item: Omit<IMenuItem, 'command'> = {}): void {
+ 	if (additionalMenuPlacement) {
+ 		throw new Error('An additional update title bar menu placement is already registered');
+@@ -80,6 +109,7 @@ export class UpdateTitleBarContribution
+ 	private state!: State;
+ 	private entry: UpdateTitleBarEntry | undefined;
+ 	private tooltipVisible = false;
++	private componentSummary: IComponentUpdateSummary | undefined;
+ 
+ 	constructor(
+ 		@IActionViewItemService actionViewItemService: IActionViewItemService,
+@@ -111,6 +141,21 @@ export class UpdateTitleBarContribution
+ 			this.onStateChange();
+ 		}));
+ 
++		// Bundled components share this indicator rather than adding a second one beside it. Two
++		// buttons meaning "update" is worse than one that covers both, and the tooltip already has
++		// room to say which part of the product each applies to.
++		this.componentSummary = currentComponentSummary;
++		this._register(onDidChangeComponentUpdateSummary(summary => {
++			this.componentSummary = summary;
++			this.tooltip.setComponentSummary(summary);
++			this.entry?.setComponentSummary(summary);
++			if (summary && (summary.available > 0 || summary.progress)) {
++				this.context.set(true);
++			} else {
++				this.onStateChange();
++			}
++		}));
++
+ 		this._register(this.configurationService.onDidChangeConfiguration(e => {
+ 			if (e.affectsConfiguration(UPDATE_TITLE_BAR_SETTING)) {
+ 				this.onStateChange();
+@@ -150,6 +195,7 @@ export class UpdateTitleBarContribution
+ 				this.context.set(false);
+ 			}
+ 		});
++		this.entry.setComponentSummary(this.componentSummary);
+ 		if (this.tooltipVisible) {
+ 			this.entry.showTooltip();
+ 		}
+@@ -221,6 +267,7 @@ export class UpdateTitleBarContribution
+ export class UpdateTitleBarEntry extends BaseActionViewItem {
+ 	private content: HTMLElement | undefined;
+ 	private showTooltipOnRender = false;
++	private componentSummary: IComponentUpdateSummary | undefined;
+ 
+ 	constructor(
+ 		action: IAction,
+@@ -277,6 +324,15 @@ export class UpdateTitleBarEntry extends
+ 	}
+ 
+ 	private async runAction() {
++		// Component-only case: the core app has nothing pending, so the click belongs to whichever
++		// command the component service asked us to run.
++		const summary = this.componentSummary;
++		if (summary?.commandId && !ACTIONABLE_STATES.includes(this.updateService.state.type)) {
++			this.commandService.executeCommand(summary.commandId);
++			this.telemetryService.publicLog2<WorkbenchActionExecutedEvent, WorkbenchActionExecutedClassification>('workbenchActionExecuted', { id: summary.commandId, from: 'titlebar' });
++			return;
++		}
++
+ 		let commandId: string | undefined;
+ 		switch (this.updateService.state.type) {
+ 			case StateType.AvailableForDownload:
+@@ -297,11 +353,42 @@ export class UpdateTitleBarEntry extends
+ 		await this.commandService.executeCommand(commandId);
+ 	}
+ 
++	/**
++	 * Component downloads are driven by a different service than the core-app state, so they are
++	 * tracked separately and folded in at render time.
++	 */
++	public setComponentSummary(summary: IComponentUpdateSummary | undefined): void {
++		this.componentSummary = summary;
++		this.onStateChange(this.updateService.state);
++	}
++
+ 	private onStateChange(state: State) {
+ 		if (!this.content) {
+ 			return;
+ 		}
+ 
++		// A component download while the core app is idle: the indicator would otherwise be absent
++		// and hundreds of megabytes would move with nothing on screen. Where the core app IS doing
++		// something, its own state wins the label — it is the more consequential operation, and the
++		// tooltip reports both regardless.
++		const summary = this.componentSummary;
++		if (summary && !DETAILED_STATES.includes(state.type)) {
++			dom.clearNode(this.content);
++			this.content.classList.remove('prominent', 'progress-indefinite', 'progress-percent', 'update-disabled');
++			this.content.style.removeProperty('--update-progress');
++			const componentLabel = dom.append(this.content, dom.$('.indicator-label'));
++			if (summary.progress) {
++				componentLabel.textContent = localize('updateIndicator.downloading', "Downloading...");
++				this.renderProgressState(this.content, summary.progress.totalBytes
++					? Math.min(100, Math.round((summary.progress.receivedBytes / summary.progress.totalBytes) * 100))
++					: undefined);
++			} else {
++				componentLabel.textContent = localize('updateIndicator.update', "Update");
++				this.content.classList.add('prominent');
++			}
++			return;
++		}
++
+ 		dom.clearNode(this.content);
+ 		this.content.classList.remove('prominent', 'progress-indefinite', 'progress-percent', 'update-disabled');
+ 		this.content.style.removeProperty('--update-progress');
