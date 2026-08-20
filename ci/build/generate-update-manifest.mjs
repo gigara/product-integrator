@@ -249,8 +249,25 @@ async function main() {
 	}
 
 	const appVersion = args['app-version'] || versions['integrator.version'];
+
+	// A components-only publish ships component updates WITHOUT a new app: an extension or runtime
+	// fix that does not warrant re-releasing the IDE.
+	//
+	// It cannot reuse `appVersion` for `requires.app`. The config declares ">={appVersion}", so a
+	// components-only run built at 5.1.6 would demand an app version nobody has, and every component
+	// would be withheld from every client — the publish would look successful and deliver nothing.
+	// So the app version these components support must be stated explicitly, and omitting it is an
+	// error rather than a silent default.
+	const componentsOnly = !!args['components-only'];
+	const requiresAppVersion = typeof args['requires-app-version'] === 'string' ? args['requires-app-version'] : undefined;
+	if (componentsOnly && !requiresAppVersion) {
+		throw new Error('--components-only requires --requires-app-version: the app version these '
+			+ 'components support. Without it, requires.app would name the version being built, which '
+			+ 'no client is running, and every component would be withheld.');
+	}
+
 	const commonVars = {
-		appVersion,
+		appVersion: requiresAppVersion ?? appVersion,
 		ballerinaVersion: versions['ballerina.version'],
 		icpVersion: versions['icp.version'],
 		jreVersion: versions['ballerina.jre.version']
@@ -410,7 +427,10 @@ async function main() {
 	// 5.2.x client is simply not matched by it.
 	const apps = [];
 	const releaseBase = typeof args['app-release-base'] === 'string' ? args['app-release-base'].replace(/\/+$/, '') : '';
-	if (releaseBase || artifactsBase) {
+	if (componentsOnly) {
+		console.log('components-only publish: no app entry, requires.app pinned to ' + requiresAppVersion);
+	}
+	if (!componentsOnly && (releaseBase || artifactsBase)) {
 		const installerNames = config.app?.installers ?? {};
 		const squirrelNames = config.app?.squirrel ?? {};
 		const perTarget = {};

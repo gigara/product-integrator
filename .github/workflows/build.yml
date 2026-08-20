@@ -67,6 +67,20 @@ on:
         required: false
         default: ''
         type: string
+      # Ship component updates WITHOUT a new app: an extension or runtime fix that does not warrant
+      # re-releasing the IDE. requires_app_version must then state which app version those components
+      # support — left to default it would name the version being built, which no client is running,
+      # and every component would be withheld.
+      components_only:
+        description: 'Publish component updates only (no app entry). Requires components_requires_app.'
+        required: false
+        default: false
+        type: boolean
+      components_requires_app:
+        description: 'App version the published components support, e.g. 5.1.5-alpha1. Required when components_only is set.'
+        required: false
+        default: ''
+        type: string
       # Under `workflow_call`, `github.ref` is the *caller's* triggering ref, so a dispatcher that
       # prepares a branch and then calls this workflow would compile the ref it was dispatched on
       # (main) rather than the branch it just prepared. Callers that prepare a branch pass its SHA
@@ -1654,6 +1668,8 @@ jobs:
             --app-release-base "https://github.com/${{ github.repository }}/releases/download/${{ inputs.publish_tag }}" \
             --app-commit "${{ github.sha }}" \
             --source-flavors "wso2.ballerina=${{ inputs.ballerina_extension_source || 'marketplace' }},wso2.micro-integrator=${{ inputs.mi_extension_source || 'marketplace' }}" \
+            ${{ inputs.components_only && '--components-only' || '' }} \
+            ${{ inputs.components_only && format('--requires-app-version {0}', inputs.components_requires_app) || '' }} \
             "${MIRROR_ARGS[@]}" \
             --out source.json
           echo "----- source.json -----"

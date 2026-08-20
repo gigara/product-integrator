@@ -45,6 +45,16 @@ on:
         required: false
         default: ''
         type: string
+      components_only:
+        description: 'Publish component updates only, with no app entry - an extension or runtime fix that does not need a new IDE version. Requires components_requires_app.'
+        required: false
+        default: false
+        type: boolean
+      components_requires_app:
+        description: 'App version the published components support, e.g. 5.1.5-alpha1. Required when components_only is set.'
+        required: false
+        default: ''
+        type: string
       runner:
         description: 'Select runner type'
         required: true
@@ -213,6 +223,8 @@ jobs:
       is_prerelease: ${{ inputs.is_prerelease }}
       channel: ${{ inputs.channel }}
       update_line_selector: ${{ inputs.update_line_selector }}
+      components_only: ${{ inputs.components_only }}
+      components_requires_app: ${{ inputs.components_requires_app }}
       target_commitish: ${{ needs.prepare-release-branch.outputs.sha }}
       runner: ${{ inputs.runner }}
       build_linux: ${{ inputs.build_linux }}
