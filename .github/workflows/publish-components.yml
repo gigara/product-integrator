@@ -270,10 +270,11 @@ jobs:
       # like a successful publish and quietly stop updates for that component. Compared against the
       # document being replaced, because that is what clients are being moved off.
       - name: Check the document still covers every component
+        id: coverage
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, sys
+          import json, os, sys
           new = json.load(open("source.json"))
           old = json.load(open("current.json"))
           new_ids = {c["id"] for c in new.get("components", [])}
@@ -293,10 +294,18 @@ jobs:
               changed += differs
               print(f"  {c['id']}: {was} -> {c.get('version')}" + (" <-- changed" if differs else ""))
           if not changed and not added:
-              # Not an error: re-publishing is the fix when a mirrored artifact was bad. But far more
-              # often it means the version bump is not on the ref that was dispatched.
+              # Not an error: re-publishing is the fix when a mirrored artifact was bad, and a schema
+              # change has to re-emit an otherwise identical document. But far more often it means
+              # the version bump is not on the ref that was dispatched.
               print("::warning::no component version changed. Clients will be offered nothing new. "
                     "Check the version bump is committed on the ref you dispatched.")
+
+          # Whether this document names exactly the artifacts the current one already names. If it
+          # does, every entry was carried, nothing was re-resolved, and there is legitimately nothing
+          # to mirror — which is otherwise indistinguishable from a mirror that failed to populate.
+          identical = new.get("components") == old.get("components")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"identical_components={str(identical).lower()}\n")
           PY
 
       - name: Dry run — nothing published
@@ -369,7 +378,15 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d artifacts-mirror ]; then
-            echo "::error::no artifacts-mirror directory; the document would point at URLs with no bytes behind them." >&2
+            # Every entry carried: they name artifacts an earlier run published, which are already in
+            # the bucket with their signed statements. Nothing to mirror, nothing to sign. Without
+            # this an all-carried document -- a schema re-emit, or a re-sign -- cannot be published,
+            # because an empty mirror is otherwise indistinguishable from one that failed to fill.
+            if [ "${{ steps.coverage.outputs.identical_components }}" = "true" ]; then
+              echo "Nothing re-mirrored: this document names the same artifacts as the one it replaces."
+              exit 0
+            fi
+            echo "::error::no artifacts-mirror directory, but this document names artifacts the current one does not; it would point at URLs with no bytes behind them." >&2
             exit 1
           fi
           printf '%s' "$COSIGN_PUBLIC_KEY" > cosign.pub
@@ -389,7 +406,13 @@ jobs:
 
       - name: Upload mirrored artifacts to update bucket
         if: ${{ !inputs.dry_run }}
-        run: aws s3 cp artifacts-mirror/ "s3://${BUCKET}/artifacts/" --recursive
+        run: |
+          set -euo pipefail
+          if [ ! -d artifacts-mirror ]; then
+            echo "Nothing to upload; every artifact this document names is already in the bucket."
+            exit 0
+          fi
+          aws s3 cp artifacts-mirror/ "s3://${BUCKET}/artifacts/" --recursive
 
       # Artifacts first, then the document, then the index: each step only becomes reachable once
       # what it names is already in place. Uploading the document before its artifacts would leave a
