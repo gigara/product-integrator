@@ -579,7 +579,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +	writeLocalManifest
 +} from '../node/wso2ComponentsManifest.js';
 +
-+const CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours
++const CHECK_INTERVAL_MS = 60 * 60 * 1000; // hourly, matching the stock app-update cadence
 +const INITIAL_CHECK_DELAY_MS = 8 * 1000; // shortly after window open (startup check)
 +
 +/**
