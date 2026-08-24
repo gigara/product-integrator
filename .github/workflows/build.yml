@@ -54,8 +54,6 @@ on:
         type: string
       # Update channel the component-update manifest is published to (insider | beta | stable).
       # New builds land in `insider` first; promote-channel.yml moves a manifest down the ladder.
-      # `delivery_mode` is gone — `publish_tag` below decides whether a release is published, and
-      # the manifest is published alongside it.
       channel:
         description: 'Update channel to publish the update manifest to'
         required: false
@@ -281,9 +279,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     needs: [resolve-versions, compile]
     env:
-      # When AWS creds are absent (e.g. a fork), skip the S3/CDN uploads and still produce the
-      # downloadable GitHub build artifacts; upstream (secret set) publishes to S3 as before.
-      # secrets can't be referenced from a step `if:`. HAS_AWS says CREDENTIALS exist; HAS_INSTALLER_BUCKET says a target does. They are different secrets, and conflating them meant configuring the UPDATE bucket switched on uploads to an installer bucket nobody had set, failing the build with `s3:///wi/...`.
+      # secrets can't be referenced from a step `if:`. HAS_AWS says credentials exist;
+      # HAS_INSTALLER_BUCKET says a target bucket does. They are different secrets.
       HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
       HAS_INSTALLER_BUCKET: ${{ secrets.AWS_S3_BUCKET != '' }}
     defaults:
@@ -818,9 +815,8 @@ jobs:
     runs-on: windows-2022
     needs: [resolve-versions, compile]
     env:
-      # When AWS creds are absent (e.g. a fork), skip the S3 upload and still produce the
-      # downloadable GitHub build artifacts; upstream (secret set) publishes to S3 as before.
-      # secrets can't be referenced from a step `if:`. HAS_AWS says CREDENTIALS exist; HAS_INSTALLER_BUCKET says a target does. They are different secrets, and conflating them meant configuring the UPDATE bucket switched on uploads to an installer bucket nobody had set, failing the build with `s3:///wi/...`.
+      # secrets can't be referenced from a step `if:`. HAS_AWS says credentials exist;
+      # HAS_INSTALLER_BUCKET says a target bucket does. They are different secrets.
       HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
       HAS_INSTALLER_BUCKET: ${{ secrets.AWS_S3_BUCKET != '' }}
     defaults:
@@ -1666,10 +1662,8 @@ jobs:
           # public repos serve them unauthenticated and ignore this.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # One UTC clock read, not the run number: the Publish Component Updates workflow publishes
-          # into these same channels and has its own, unrelated run numbering. With run numbers the
-          # two publishers interleave into a sequence that does not order the documents, and the
-          # promotion guard — which compares sequences per line — starts refusing valid promotions.
+          # A UTC clock read, not the run number: publish-components.yml writes the same channels with
+          # independent numbering, and the promotion guard compares sequences per line.
           SEQUENCE=$(date -u +%s)
           echo "SEQUENCE=${SEQUENCE}" >> "$GITHUB_ENV"
           echo "document sequence ${SEQUENCE} (run ${{ github.run_number }})"
@@ -1816,8 +1810,8 @@ jobs:
           # kill-switch, rollout and entitlement decisions.
           DEST="s3://${{ secrets.AWS_UPDATE_S3_BUCKET }}/manifests/${CHANNEL}/"
 
-          # Publish under this release's own name. Overwriting a shared source.json is what let a
-          # 5.2 release delete the document 5.1.x clients were still served from.
+          # Published under this release's own name, so a newer release never overwrites the document an
+          # older line is still served from.
           DOC="source-${APP_VERSION}.json"
           aws s3 cp source.json "${DEST}${DOC}" --content-type application/json --cache-control no-cache
           aws s3 cp source.json.sig "${DEST}${DOC}.sig" --content-type text/plain --cache-control no-cache
@@ -1828,11 +1822,9 @@ jobs:
             SELECTOR="$(printf '%s' "${APP_VERSION}" | awk -F. '{print $1"."$2".x"}')"
           fi
 
-          # Upsert this release's line into the index. The index is small, unsigned and hand-editable
-          # by design, so a read-modify-write here is safe in a way rewriting a signed document is
-          # not: the worst outcome is a stale pointer to an already-verified document. The guards
-          # (unreachable entry, sequence regression) live in the script, shared with the Publish
-          # Component Updates workflow so the two publishers cannot drift apart.
+          # The index is small, unsigned and hand-editable, so a read-modify-write is safe here in a way
+          # rewriting a signed document is not. The guards live in the script, shared with
+          # publish-components.yml so the two publishers cannot drift apart.
           if aws s3 cp "${DEST}index.json" index.json 2>/dev/null; then
             echo "Existing index:"; cat index.json
           else

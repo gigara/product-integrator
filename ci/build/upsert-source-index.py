@@ -59,8 +59,7 @@ def main():
                     help="sequence of the document this line serves today")
     args = ap.parse_args()
 
-    # A publish that moves a line backwards silently un-ships whatever was in the newer document.
-    # Checked here rather than at promotion time, where it would already have shipped.
+    # Moving a line backwards silently un-ships whatever the newer document carried.
     if args.sequence is not None and args.current_sequence is not None:
         if args.sequence <= args.current_sequence:
             sys.exit(f"error: sequence {args.sequence} is not newer than the {args.current_sequence} "
@@ -80,8 +79,7 @@ def main():
         entries.append({"match": args.selector, "manifest": args.manifest})
         position = len(entries) - 1
 
-    # An entry that no client can ever reach is worse than a failed publish: the release looks
-    # published and simply never arrives. Fail here so the operator reorders the file instead.
+    # An unreachable entry looks published and never arrives, so fail and let the operator reorder.
     probe = sample_version(args.selector)
     if probe is not None:
         for earlier in entries[:position]:

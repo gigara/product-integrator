@@ -1,21 +1,11 @@
-# Ship a component fix without re-releasing the IDE.
+# Publishes component updates without an app release.
 #
-# The Release workflow publishes the app AND the components that go with it, which means a one-line
-# extension fix used to cost a full VS Code compile, both macOS installer builds, and a release tag
-# for a version that is not an app release. Only ONE component is actually built in this repo (the WI
-# extension); every other component is downloaded from upstream at the version pinned in
-# ci/build/component-versions.properties. So publishing any of those eight is just an edit to that
-# file on the ref you dispatch, and publishing the WI extension adds one project build -- which
-# `rebuild_wi_extension: false` skips when the fix is not in the extension, carrying its previous
-# entry forward instead of pushing an unrelated new build to every client.
+# Component versions come from ci/build/component-versions.properties on the dispatched ref. Only the
+# WI extension is built here; every other component is downloaded.
 #
-# How it lands: this publishes a NEW source document and repoints one index line at it, carrying the
-# previous document's app entries forward. Carrying them is not optional — the index serves one
-# document per line, so a document without them would withdraw the app update that line was offering
-# and clients on an older version of it would never be upgraded again.
-#
-# The document always describes the FULL component set for the line, for the same reason: it replaces
-# the previous document, so a component left out of it stops being offered.
+# This publishes a new source document and repoints one index line at it. The index serves one
+# document per line, so the new document must carry the previous one's app entries and describe the
+# full component set — anything left out stops being offered to that line.
 name: Publish Component Updates
 
 run-name: >-
@@ -81,14 +71,11 @@ jobs:
       CHANNEL: ${{ inputs.channel }}
       BUCKET: ${{ secrets.AWS_UPDATE_S3_BUCKET }}
       ARTIFACTS_URL: ${{ secrets.WSO2_UPDATE_ARTIFACTS_URL }}
-      # A step `if:` cannot see `secrets`, so its presence is hoisted here — same reason
-      # HAS_PINNED_KEY exists on the release workflow's publish job.
+      # A step `if:` cannot see `secrets`, so presence is hoisted to job env.
       HAS_PINNED_KEY: ${{ secrets.WSO2_UPDATE_PUBLIC_KEY != '' }}
     steps:
-      # Fail before spending ten minutes on a build that could not be published anyway. Each of
-      # these is required rather than optional, because a components publish exists to deliver
-      # components: unsigned, or pointing at upstream URLs the client's host allowlist refuses,
-      # it would produce a document that every client rejects.
+      # Checked before the build rather than after it. All four are required: without mirroring or
+      # signing, the resulting document is one every client rejects.
       - name: Check the publish path is configured
         run: |
           set -euo pipefail
@@ -109,15 +96,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # Component versions come from ci/build/component-versions.properties on THIS ref, so the
-          # ref decides what gets published. The WI extension is built from it too.
+          # The dispatched ref supplies both the component versions and the WI extension source.
           ref: ${{ inputs.ref || github.ref }}
           submodules: recursive
 
-      # The dispatched ref decides which tooling runs, and a ref that predates the update mechanism
-      # (an old release tag, or the default branch before this merges) carries none of it. Without
-      # this the run dies several steps later on a missing module, which reads as a broken workflow
-      # rather than the wrong ref.
+      # A ref without the publish tooling (an old release tag, say) would otherwise fail several
+      # steps later on a missing module, which reads as a broken workflow rather than a wrong ref.
       - name: Check this ref carries the publish tooling
         run: |
           set -euo pipefail
@@ -139,9 +123,8 @@ jobs:
           cache: npm
           cache-dependency-path: lib/vscode/package-lock.json
 
-      # Stamps a fresh wi.extension.version and mirrors it into wi/wi-extension/package.json, which
-      # is where package-vsix.js takes the .vsix name from and where the generator reads the
-      # component's version. Not committed — this run publishes it, it does not change the branch.
+      # Stamps wi.extension.version into wi/wi-extension/package.json: package-vsix.js names the
+      # .vsix from it, and the generator reads the component version there. Not committed.
       - name: Stamp the extension version
         if: ${{ inputs.rebuild_wi_extension }}
         run: |
@@ -176,8 +159,8 @@ jobs:
         if: ${{ inputs.rebuild_wi_extension }}
         run: |
           set -euo pipefail
-          # The generator resolves this component from a local file (config `sourceFile`); a missing
-          # VSIX would otherwise surface as a confusing hashing error much later.
+          # The generator reads this component from a local file (config `sourceFile`); a missing
+          # VSIX would otherwise surface later as a hashing error.
           ls -la wi/wi-extension/*.vsix
 
       - name: Login to AWS
@@ -205,11 +188,8 @@ jobs:
           echo "line ${selector} is served by ${current_doc}"
           aws s3 cp "${DEST}${current_doc}" current.json
 
-          # One UTC clock read: the sequence orders documents within a channel, and both this
-          # workflow and the release workflow publish into the same channel without being able to
-          # see each other's numbering. A wall clock is the only scheme they can share — a per-line
-          # `current + 1` here would climb above the release workflow's run numbers and leave every
-          # release after it looking older than the components published in between.
+          # The sequence orders documents within a channel. Two workflows publish into the same
+          # channel with independent numbering, so both take a UTC clock read.
           SEQUENCE=$(date -u +%s)
           python3 ci/build/plan-component-publish.py plan --index index.json --selector "${selector}" \
             --current current.json --stamp "$(date -u -d "@${SEQUENCE}" +%y%m%d%H%M)" > planned.env
@@ -224,9 +204,8 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "publishing ${doc} (sequence ${SEQUENCE}, up from ${current_sequence}) for line ${selector}"
 
-      # Every target the config knows about. A components publish builds no installers, so unlike a
-      # release there is no "platforms this run produced" to narrow to — the components exist for
-      # every platform, and the carried app entries keep whatever targets they were published with.
+      # Every target in the config: no installers are built here, so there is no per-run platform
+      # set to narrow to. Carried app entries keep the targets they were published with.
       - name: Generate source document
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -240,9 +219,8 @@ jobs:
           # Publish each extension from the SAME source the app build bundled, so the artifact a
           # client is offered cannot diverge from the one it already has.
           EXTRA+=(--source-flavors "wso2.ballerina=${{ inputs.ballerina_extension_source }},wso2.micro-integrator=${{ inputs.mi_extension_source }}")
-          # Anything not being changed is copied from the current document rather than re-resolved
-          # and re-mirrored. The WI extension gets its own toggle because carrying it is also what
-          # lets the build be skipped entirely.
+          # Unchanged components are copied from the current document instead of re-mirrored. The
+          # WI extension has its own toggle because carrying it also skips the build.
           CARRY="${{ inputs.carry_components }}"
           if [ "${{ inputs.rebuild_wi_extension }}" != "true" ]; then
             CARRY="${CARRY:+${CARRY},}wso2.wso2-integrator"
@@ -251,8 +229,7 @@ jobs:
             EXTRA+=(--carry-components "${CARRY}")
           fi
           if [ "${{ inputs.dry_run }}" = "true" ]; then
-            # Structure only: hashing every artifact means downloading the JRE and both runtimes,
-            # which a dry run does not need to tell you what would be published.
+            # Structure only — a dry run need not download and hash every artifact.
             EXTRA+=(--no-download)
           fi
           node ci/build/generate-update-manifest.mjs \
@@ -266,9 +243,8 @@ jobs:
           echo "----- source.json -----"
           cat source.json
 
-      # A document that names no component, or drops one the previous document offered, would look
-      # like a successful publish and quietly stop updates for that component. Compared against the
-      # document being replaced, because that is what clients are being moved off.
+      # Dropping a component the current document offers would stop its updates silently, so the
+      # new document is compared against the one it replaces.
       - name: Check the document still covers every component
         id: coverage
         run: |
@@ -294,15 +270,13 @@ jobs:
               changed += differs
               print(f"  {c['id']}: {was} -> {c.get('version')}" + (" <-- changed" if differs else ""))
           if not changed and not added:
-              # Not an error: re-publishing is the fix when a mirrored artifact was bad, and a schema
-              # change has to re-emit an otherwise identical document. But far more often it means
-              # the version bump is not on the ref that was dispatched.
+              # Legitimate when re-emitting a document deliberately; usually it means the version
+              # bump is not on the dispatched ref.
               print("::warning::no component version changed. Clients will be offered nothing new. "
                     "Check the version bump is committed on the ref you dispatched.")
 
-          # Whether this document names exactly the artifacts the current one already names. If it
-          # does, every entry was carried, nothing was re-resolved, and there is legitimately nothing
-          # to mirror — which is otherwise indistinguishable from a mirror that failed to populate.
+          # True when every entry was carried, so nothing needs mirroring — otherwise
+          # indistinguishable from a mirror that failed to populate.
           identical = new.get("components") == old.get("components")
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               out.write(f"identical_components={str(identical).lower()}\n")
@@ -325,9 +299,8 @@ jobs:
         if: ${{ !inputs.dry_run }}
         uses: sigstore/cosign-installer@v3
 
-      # Same check the release workflow makes: clients verify against WSO2_UPDATE_PUBLIC_KEY baked
-      # into product.json at build time, CI signs with COSIGN_PRIVATE_KEY, and nothing downstream
-      # compares them — a mismatch would only surface as every client rejecting every artifact.
+      # Clients verify against WSO2_UPDATE_PUBLIC_KEY baked into product.json; CI signs with
+      # COSIGN_PRIVATE_KEY. Nothing else compares them, and a mismatch rejects every artifact.
       - name: Check the pinned key matches the signing key
         if: ${{ !inputs.dry_run && env.HAS_PINNED_KEY == 'true' }}
         env:
@@ -365,10 +338,8 @@ jobs:
           cosign verify-blob --key cosign.pub --signature source.json.sig source.json
           rm -f cosign.pub
 
-      # Statements, not artifact bytes: a signature over the bytes proves only "WSO2 produced this
-      # file", which would leave a document free to offer an old signed artifact under a new version
-      # label. The statement binds id + version + sha256 (+ requires) so the client can check the
-      # claim it was actually given.
+      # Statements, not artifact bytes: signing bytes alone would let a document offer an old
+      # artifact under a new version label. The statement binds id + version + sha256 + requires.
       - name: Sign mirrored artifacts
         if: ${{ !inputs.dry_run }}
         env:
@@ -378,10 +349,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d artifacts-mirror ]; then
-            # Every entry carried: they name artifacts an earlier run published, which are already in
-            # the bucket with their signed statements. Nothing to mirror, nothing to sign. Without
-            # this an all-carried document -- a schema re-emit, or a re-sign -- cannot be published,
-            # because an empty mirror is otherwise indistinguishable from one that failed to fill.
+            # Every entry carried: the artifacts they name are already in the bucket with signed
+            # statements, so there is nothing to mirror or sign.
             if [ "${{ steps.coverage.outputs.identical_components }}" = "true" ]; then
               echo "Nothing re-mirrored: this document names the same artifacts as the one it replaces."
               exit 0
@@ -414,9 +383,8 @@ jobs:
           fi
           aws s3 cp artifacts-mirror/ "s3://${BUCKET}/artifacts/" --recursive
 
-      # Artifacts first, then the document, then the index: each step only becomes reachable once
-      # what it names is already in place. Uploading the document before its artifacts would leave a
-      # window where a client is offered bytes that 404.
+      # Artifacts, then the document, then the index: nothing becomes reachable before what it
+      # names is in place.
       - name: Publish document and repoint the line
         if: ${{ !inputs.dry_run }}
         env:
@@ -430,9 +398,8 @@ jobs:
           aws s3 cp source.json "${DEST}${DOC}" --content-type application/json --cache-control no-cache
           aws s3 cp source.json.sig "${DEST}${DOC}.sig" --content-type text/plain --cache-control no-cache
 
-          # Re-read the index rather than reusing the copy from the plan step: the concurrency group
-          # makes a concurrent publish unlikely, not impossible, and the index is the one file here
-          # that is read-modify-written.
+          # Re-read rather than reuse the plan step's copy: the index is read-modify-written and
+          # the concurrency group makes a concurrent publish unlikely, not impossible.
           aws s3 cp "${DEST}index.json" index.json
           python3 ci/build/upsert-source-index.py \
             --index index.json \

@@ -21,8 +21,8 @@ import re
 import shlex
 import sys
 
-# Matches the update server's isSourceFile() guard: a document it will refuse to serve is worse than
-# one that was never published, because the index would name it and every check would fail.
+# Matches the update server's isSourceFile() guard: a name it refuses to serve would be named by the
+# index and fail every check.
 SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
 
 
@@ -39,8 +39,7 @@ def resolve_selector(index, selector):
                  "replaces the document serving a line, so the line must already be served — "
                  "publish an app release to this channel first.")
     if not selector:
-        # Guessing is not safe: picking the wrong line would repoint clients that were never meant
-        # to receive this build. With one line there is nothing to guess.
+        # Guessing would repoint clients that were not meant to receive this build.
         if len(entries) > 1:
             listed = ", ".join(f"{e.get('match')} -> {e.get('manifest')}" for e in entries)
             sys.exit(f"error: this channel serves {len(entries)} lines, so --selector is required. "
@@ -81,17 +80,13 @@ def main():
     document = load(args.current)
 
     # Reported so the caller can refuse a publish that would move the line backwards. The new
-    # sequence is NOT invented here: it is a UTC clock read taken by the caller, which is the only
-    # scheme the release workflow and this one can both use without coordinating. Deriving it as
-    # `current + 1` here would climb above the release workflow's numbering and leave every
-    # subsequent release looking older than the components published between them.
+    # sequence is a UTC clock read taken by the caller — the only scheme both publishers share.
     current_sequence = int(document.get("sequence", 0))
 
     apps = document.get("apps", [])
     app_version = apps[0]["version"] if len(apps) == 1 else ""
 
-    # Name the document after the app line it serves, so an operator reading the bucket can tell
-    # which release a component revision belongs to.
+    # Named after the app line it serves, so the bucket shows which release a revision belongs to.
     label = app_version or selector
     if args.stamp:
         label = f"{label}-c{args.stamp}"

@@ -515,7 +515,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/wso2ComponentUpdateService.ts
-@@ -0,0 +1,1334 @@
+@@ -0,0 +1,1333 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -1827,10 +1827,9 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +			const host = parsed.hostname.toLowerCase();
 +			const configuredHost = this.updateBaseUrl ? new URL(this.updateBaseUrl).hostname.toLowerCase() : undefined;
 +
-+			// Loopback over plain http exists for local update-server development. It is allowed only
-+			// when the configured update server is ITSELF loopback: a production build points at the
-+			// real server, so there it stays refused. Otherwise every build would carry a path that
-+			// accepts unverified bytes from any process able to listen on a local port.
++			// Plain-http loopback is for local update-server development, so it is allowed only when
++			// the configured update server is itself loopback. A production build points at the real
++			// server and refuses it.
 +			const isLoopback = Wso2ComponentUpdateService.isLoopbackHost(host);
 +			const developingAgainstLocalServer = !!configuredHost && Wso2ComponentUpdateService.isLoopbackHost(configuredHost);
 +			if (isLoopback) {

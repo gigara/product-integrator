@@ -191,10 +191,8 @@ async function hashLocalFile(filePath, mirrorPath) {
 	return { sha256: hash.digest('hex'), sizeBytes: size };
 }
 
-// Writes the signed-statement source document next to a mirrored artifact. CI signs this file, not
-// the artifact: a signature over bytes alone would prove only that WSO2 produced them, leaving a
-// manifest free to offer an old signed artifact under a new version label. Binding id + version +
-// digest (+ requires) into the signed document is what the client checks against the manifest's claim.
+// Writes the signed statement next to a mirrored artifact. CI signs this, not the artifact: binding
+// id + version + digest (+ requires) stops a signature being replayed over a different artifact.
 function writeStatement(mirrorPath, { id, version, sha256, sizeBytes, requires }) {
 	const statement = { schemaVersion: 1, id, version, sha256, sizeBytes };
 	if (requires && Object.keys(requires).length > 0) {
@@ -253,22 +251,12 @@ async function main() {
 
 	const appVersion = args['app-version'] || versions['integrator.version'];
 
-	// A components-only publish ships component updates WITHOUT a new app: an extension or runtime
-	// fix that does not warrant re-releasing the IDE.
-	//
-	// It cannot reuse `appVersion` for `requires.app`. The config declares ">={appVersion}", so a
-	// components-only run built at 5.1.6 would demand an app version nobody has, and every component
-	// would be withheld from every client — the publish would look successful and deliver nothing.
-	// So the app version these components support must be stated explicitly, and omitting it is an
-	// error rather than a silent default.
+	// A components-only publish ships component updates without a new app.
 	const componentsOnly = !!args['components-only'];
 
-	// A components-only publish REPLACES the document the index serves for its line, so publishing
-	// one with an empty apps[] would withdraw the app update the previous document offered: a client
-	// still on an older version of that line would silently never be offered the upgrade again.
-	// Carrying the previous document's app entries verbatim keeps that offer intact. Copying them is
-	// safe precisely because they describe artifacts that are already uploaded, hashed and signed —
-	// re-describing them requires none of those bytes.
+	// A components-only document REPLACES the one the index serves for its line, so an empty apps[]
+	// would withdraw the app update that line was offering. The previous entries are carried verbatim;
+	// they describe artifacts that are already uploaded, hashed and signed.
 	const carryAppsFrom = typeof args['carry-apps-from'] === 'string' ? args['carry-apps-from'] : '';
 	let carriedApps = [];
 	if (carryAppsFrom) {
@@ -281,11 +269,8 @@ async function main() {
 			+ `from ${carryAppsFrom}: ${carriedApps.map(a => a.version).join(', ') || '(none)'}`);
 	}
 
-	// Components this publish is NOT changing are copied from the previous document rather than
-	// resolved. Two reasons: the WI extension is built here and its version is a build timestamp, so
-	// rebuilding it to ship an unrelated runtime fix would push a new extension to every client for
-	// nothing; and skipping the build is what makes a downloaded-component-only publish cheap. The
-	// entry is copied whole, so the document still describes the full set.
+	// Components this publish is not changing are copied from the previous document rather than
+	// re-resolved and re-mirrored. The entry is copied whole, so the document still describes the full set.
 	const carryComponentIds = new Set(
 		(typeof args['carry-components'] === 'string' ? args['carry-components'] : '')
 			.split(',').map(id => id.trim()).filter(Boolean));
@@ -293,12 +278,9 @@ async function main() {
 		throw new Error('--carry-components needs --carry-apps-from: the document to copy those entries from.');
 	}
 
-	// The app version the components require. Defaulting it to the version being built would be
-	// wrong for a components-only run: the config declares ">={appVersion}", so it would demand an
-	// app version nobody is running and every component would be withheld from every client — a
-	// publish that looks successful and delivers nothing. The carried document names the app that is
-	// actually released for this line, which is the correct default; an explicit value still wins,
-	// for a component that supports an older app than the newest one.
+	// The app version the components require. It must not default to the version being built: the config
+	// declares ">={appVersion}", so that would demand a version nobody runs and withhold every component.
+	// The carried document names the app actually released for this line; an explicit value still wins.
 	if (carryComponentIds.size > 0) {
 		const previous = JSON.parse(readFileSync(carryAppsFrom, 'utf8'));
 		const available = new Set((previous.components ?? []).map(c => c.id));
@@ -556,10 +538,7 @@ async function main() {
 	const publishedAt = args['published-at'] || new Date().toISOString();
 
 	// No channel field: a document's channel is the prefix it is stored under, and promotion copies
-	// documents between channels, so a field would have to be rewritten on every promotion or start
-	// lying. No expiry either — nothing enforced one, and an enforced one silently stops updates for
-	// a maintenance line on a date nobody remembers setting. Withdrawal is an explicit act: repoint
-	// the index, or revoke.
+	// documents between channels. No expiry either — withdrawal is explicit: repoint the index, or revoke.
 	const source = {
 		schemaVersion: 1,
 		sequence,
