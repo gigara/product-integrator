@@ -254,9 +254,8 @@ service / on updateListener {
         }
         do {
             byte[] body = check request.getBinaryPayload();
-            // Any source document, not just the historical "source.json": releases publish
-            // source-<version>.json, so a check pinned to the old name validated nothing.
-            // Signatures and the index are not documents and have no shape to check.
+            // Any source document: releases publish source-<version>.json. Signatures and the
+            // index are not documents and have no shape to check.
             if fileName.startsWith("source") && fileName.endsWith(".json") {
                 // Reject a malformed document at publish time. Otherwise the failure surfaces
                 // later, on every client's update check, against a server that looks healthy.
@@ -264,8 +263,7 @@ service / on updateListener {
                 json parsed = check text.fromJsonString();
                 SourceManifest shape = check parsed.cloneWithType(SourceManifest);
                 if shape.schemaVersion != SOURCE_SCHEMA_VERSION {
-                    // `fail`, not `return`: this resource returns http:Response, and the on-fail
-                    // clause below is what turns an error into the 400.
+                    // `fail`, not `return`: the on-fail clause below turns this into the 400.
                     fail error(string `document declares schemaVersion ${shape.schemaVersion}, `
                         + string `but this server only understands ${SOURCE_SCHEMA_VERSION}.`);
                 }
@@ -314,9 +312,8 @@ function loadSource(string channel, string? clientVersion = ()) returns SourceMa
     string text = check string:fromBytes(stored[0]);
     json parsed = check text.fromJsonString();
     SourceManifest src = check parsed.cloneWithType(SourceManifest);
-    // Refuse a schema this build does not know rather than serving whatever the current record
-    // happens to accept. Ballerina's open records would silently drop fields a newer document
-    // depends on, so the failure would be a WRONG offer, not a rejected one.
+    // Refuse an unknown schema: open records drop fields a newer document depends on, so the
+    // failure would be a wrong offer rather than a rejected one.
     if src.schemaVersion != SOURCE_SCHEMA_VERSION {
         return error(string `${channel}/${fileName} declares schemaVersion ${src.schemaVersion}, `
             + string `but this server only understands ${SOURCE_SCHEMA_VERSION}.`);

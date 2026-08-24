@@ -97,15 +97,11 @@ public type SourceApp record {
     map<AppTarget> targets;
 };
 
-// The channel is deliberately NOT a field here. A document's channel is where it lives — the
-// manifests/<channel>/ prefix the server read it from — and promotion COPIES documents between
-// channels, so a field would have to be rewritten on every promotion or start lying. It never was
-// rewritten, so every promoted document named the channel it was first published to.
+// No channel field: a document's channel is the manifests/<channel>/ prefix it was read from, and
+// promotion copies documents between channels, so a field would have to be rewritten every time.
 //
-// There is no expiry field either. Nothing enforced one, and enforcing one would have been a time
-// bomb: a maintenance line's document would stop serving on a date nobody remembers setting, and the
-// symptom is silently withheld updates. Withdrawing a document is an explicit act — repoint the index
-// entry, or add a `revocations` entry.
+// No expiry field either. An enforced one stops a maintenance line's updates on a date nobody set
+// deliberately. Withdrawal is explicit: repoint the index entry, or add a `revocations` entry.
 public type SourceManifest record {
     int schemaVersion;
     int sequence;
@@ -114,9 +110,8 @@ public type SourceManifest record {
     SourceComponent[] components;
 };
 
-// The only source-document schema there has ever been. A version field that nobody checks is worse
-// than no field at all: it implies the reader adapts to what it is told, when in fact an
-// incompatible document would be mis-parsed into whatever the current record happens to accept.
+// The only source-document schema. Validated on read and at publish: unchecked, an incompatible
+// document would be mis-parsed into whatever the current record happens to accept.
 public const int SOURCE_SCHEMA_VERSION = 1;
 
 // --- release-line index ----------------------------------------------------------------
