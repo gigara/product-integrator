@@ -773,13 +773,15 @@ jobs:
         run: |
           V="${{ needs.resolve-versions.outputs.integrator_version }}"
           ZIP="installers/mac/wso2-integrator-${V}-${{ matrix.arch }}-mac.zip"
-          if [ ! -f "$ZIP" ]; then
-            echo "Squirrel.Mac payload not found at $ZIP" >&2
-            exit 1
-          fi
+          # Bucket first: a deployment that publishes no updates skips cleanly here, and only a
+          # deployment that WOULD upload treats a missing payload as the failure it is.
           if [ -z "${{ secrets.AWS_UPDATE_S3_BUCKET }}" ]; then
             echo "AWS_UPDATE_S3_BUCKET not set — skipping Squirrel.Mac payload upload."
             exit 0
+          fi
+          if [ ! -f "$ZIP" ]; then
+            echo "Squirrel.Mac payload not found at $ZIP" >&2
+            exit 1
           fi
           # Same artifacts layout as everything else; the darwin manifest's app.squirrel.url
           # (embedded by generate-update-manifest.mjs) points at this exact versioned CDN URL.
@@ -1112,8 +1114,10 @@ jobs:
           # to strip/verify Authenticode signatures. signtool ships with the Windows SDK
           # but is not on PATH on GitHub-hosted runners, so prepend the newest SDK bin dir
           # (self-hosted runners already have it on PATH; the pinned version differs).
+          # Sorted by parsed SDK version, not by name: string ordering ranks 10.0.9... above
+          # 10.0.10..., which would pick an older signtool once two SDKs are installed.
           $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue |
-            Sort-Object FullName -Descending | Select-Object -First 1
+            Sort-Object { [version]$_.Directory.Parent.Name } -Descending | Select-Object -First 1
           if ($signtool) {
             $env:PATH = "$($signtool.DirectoryName);$env:PATH"
             Write-Host "Added Windows SDK to PATH: $($signtool.DirectoryName)"
