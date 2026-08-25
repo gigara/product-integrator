@@ -515,7 +515,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/wso2ComponentUpdateService.ts
-@@ -0,0 +1,1333 @@
+@@ -0,0 +1,1337 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -584,11 +584,15 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +
 +/**
 + * Hosts artifacts and manifests are allowed to be served from (defense in depth on top of TLS).
-+ * All update artifacts are mirrored to the WSO2 update bucket/CDN at publish time
-+ * (generate-update-manifest.mjs --mirror-dir), so third-party hosts like open-vsx are not needed.
-+ * github stays for now (test manifests + runtime artifacts during the transition).
++ * Every URL here comes from the update server, so this bounds where a manipulated document could
++ * send the client BEFORE any signature is checked. Keep it as narrow as the deployment allows.
++ *
++ * All artifacts are mirrored to the WSO2 update bucket/CDN at publish time
++ * (generate-update-manifest.mjs --mirror-dir), so a published document names only that host. The
++ * configured update-server host is allowed separately, and loopback only when developing against a
++ * local server.
 + */
-+const ALLOWED_HOST_SUFFIXES = ['updates.wso2.com', 'github.com', 'githubusercontent.com', 'wso2.com'];
++const ALLOWED_HOST_SUFFIXES = ['wso2.com'];
 +
 +/**
 + * A component artifact is hundreds of MB, so a single transient network fault must not throw the
