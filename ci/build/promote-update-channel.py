@@ -13,6 +13,7 @@ nothing is re-signed. The client resolves by channel path and never reads the do
 Usage: promote-update-channel.py <bucket> <from-channel> <to-channel>
 """
 import json
+import re
 import subprocess
 import sys
 
@@ -22,11 +23,24 @@ def aws(*args: str) -> subprocess.CompletedProcess:
 
 
 def read_json_key(bucket: str, key: str):
-    """Returns the parsed object, or None when the key does not exist."""
+    """Returns the parsed object, or None when the key does not exist.
+
+    Any other failure (auth, throttling, network) aborts the promotion. Treating those as "missing"
+    would rebuild the target index from only the promoted lines and silently drop every line the
+    target serves that the source does not -- the exact state this script promises to preserve.
+    """
+    head = aws("s3api", "head-object", "--bucket", bucket, "--key", key)
+    if head.returncode != 0:
+        if "404" in head.stderr or "Not Found" in head.stderr:
+            return None
+        sys.exit(f"error: cannot determine whether s3://{bucket}/{key} exists: {head.stderr.strip()}")
     got = aws("s3", "cp", f"s3://{bucket}/{key}", "-")
     if got.returncode != 0:
-        return None
-    return json.loads(got.stdout)
+        sys.exit(f"error: reading s3://{bucket}/{key} failed: {got.stderr.strip()}")
+    try:
+        return json.loads(got.stdout)
+    except json.JSONDecodeError as err:
+        sys.exit(f"error: s3://{bucket}/{key} is not valid JSON: {err}")
 
 
 def main() -> int:
@@ -45,8 +59,13 @@ def main() -> int:
         dst_index = {"schemaVersion": 1, "entries": []}
 
     print(f"promoting {source} -> {target}")
+    manifest_shape = re.compile(r"^(source|source-[A-Za-z0-9][A-Za-z0-9._+-]{0,63})\.json$")
     for entry in src_index["entries"]:
         match, manifest = entry["match"], entry["manifest"]
+        if not manifest_shape.match(manifest):
+            print(f"error: index names manifest '{manifest}', which the update server would refuse "
+                  f"to serve; fix {source}/index.json first", file=sys.stderr)
+            return 1
         src_doc = read_json_key(bucket, f"manifests/{source}/{manifest}")
         if src_doc is None:
             print(f"error: {source}/index.json names {manifest}, which is not in the bucket", file=sys.stderr)

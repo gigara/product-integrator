@@ -39,6 +39,10 @@
 // Components may declare `sourceFile` (a repo-relative file, e.g. the locally built WI extension
 // VSIX) instead of `url`; those require mirroring since they have no public source URL.
 //
+// Exception: the macOS Squirrel zip is neither hashed nor mirrored here — only its CDN URL is
+// composed. The macOS build job uploads the zip to that exact path itself, and Squirrel verifies
+// provenance via Apple code signing. Renaming either side breaks the other.
+//
 // Alongside each artifact the generator writes a SIGNED STATEMENT (<artifact>.statement.json)
 // binding {id, version, sha256, sizeBytes, requires} together, so a signature cannot be replayed
 // over a different artifact than the one it was issued for.
@@ -65,6 +69,11 @@ import { fileURLToPath } from 'node:url';
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(SCRIPT_DIR, '..', '..');
 
+// The only flags that are legitimately valueless. Everything else takes a value, and a value flag
+// left dangling must be an error: `--targets` followed by another flag would otherwise silently
+// mean "all targets", and `--app-rollout` alone would coerce to a 1% rollout.
+const BOOLEAN_FLAGS = new Set(['components-only', 'no-download']);
+
 function parseArgs(argv) {
 	const args = {};
 	for (let i = 0; i < argv.length; i++) {
@@ -73,6 +82,9 @@ function parseArgs(argv) {
 			const key = a.slice(2);
 			const next = argv[i + 1];
 			if (next === undefined || next.startsWith('--')) {
+				if (!BOOLEAN_FLAGS.has(key)) {
+					throw new Error(`--${key} needs a value`);
+				}
 				args[key] = true;
 			} else {
 				args[key] = next;
@@ -157,22 +169,28 @@ async function hashAndSize(url, mirrorPath) {
 	const hash = createHash('sha256');
 	let size = 0;
 	let out;
+	let outError;
 	if (mirrorPath) {
 		mkdirSync(path.dirname(mirrorPath), { recursive: true });
 		out = createWriteStream(mirrorPath);
+		// Attached BEFORE the write loop: a stream that errors mid-download (disk full while
+		// mirroring a multi-hundred-MB runtime) would otherwise raise an uncaught 'error' event —
+		// or, if a write had just returned false, leave the loop awaiting a 'drain' that will
+		// never come.
+		out.on('error', err => { outError = err; });
 	}
 	for await (const chunk of Readable.fromWeb(res.body)) {
+		if (outError) {
+			throw new Error(`Failed to mirror ${url} to ${mirrorPath}: ${outError.message}`);
+		}
 		hash.update(chunk);
 		size += chunk.length;
 		if (out && !out.write(chunk)) {
-			await new Promise(resolve => out.once('drain', resolve));
+			await new Promise(resolve => out.once('drain', () => resolve()).once('error', () => resolve()));
 		}
 	}
 	if (out) {
-		await new Promise((resolve, reject) => {
-			out.on('error', reject);
-			out.end(resolve);
-		});
+		await new Promise((resolve, reject) => out.end(() => outError ? reject(outError) : resolve()));
 	}
 	return { sha256: hash.digest('hex'), sizeBytes: size };
 }
@@ -206,6 +224,10 @@ function writeStatement(mirrorPath, { id, version, sha256, sizeBytes, requires }
 async function main() {
 	const args = parseArgs(process.argv.slice(2));
 	const sequence = Number(args.sequence ?? 0);
+	if (!Number.isInteger(sequence) || sequence < 0) {
+		throw new Error(`--sequence must be a non-negative integer, got '${args.sequence}'. `
+			+ `A non-numeric value would serialize as null and break the next publish that reads it.`);
+	}
 	const noDownload = !!args['no-download'];
 
 	const configPath = args.config || path.join(SCRIPT_DIR, 'update-manifest.config.json');
@@ -258,9 +280,11 @@ async function main() {
 	// would withdraw the app update that line was offering. The previous entries are carried verbatim;
 	// they describe artifacts that are already uploaded, hashed and signed.
 	const carryAppsFrom = typeof args['carry-apps-from'] === 'string' ? args['carry-apps-from'] : '';
+	let carriedDocument;
 	let carriedApps = [];
 	if (carryAppsFrom) {
-		const previous = JSON.parse(readFileSync(carryAppsFrom, 'utf8'));
+		carriedDocument = JSON.parse(readFileSync(carryAppsFrom, 'utf8'));
+		const previous = carriedDocument;
 		if (!Array.isArray(previous.apps)) {
 			throw new Error(`--carry-apps-from ${carryAppsFrom} has no apps array; it is not a source document.`);
 		}
@@ -282,8 +306,7 @@ async function main() {
 	// declares ">={appVersion}", so that would demand a version nobody runs and withhold every component.
 	// The carried document names the app actually released for this line; an explicit value still wins.
 	if (carryComponentIds.size > 0) {
-		const previous = JSON.parse(readFileSync(carryAppsFrom, 'utf8'));
-		const available = new Set((previous.components ?? []).map(c => c.id));
+		const available = new Set((carriedDocument.components ?? []).map(c => c.id));
 		const configured = new Set(config.components.map(c => c.id));
 		for (const id of carryComponentIds) {
 			// Both checks catch a typo, which would otherwise drop the component from the document
@@ -307,7 +330,7 @@ async function main() {
 
 	let requiresAppVersion = typeof args['requires-app-version'] === 'string' ? args['requires-app-version'] : undefined;
 	if (componentsOnly && !requiresAppVersion) {
-		if (carriedApps.length === 1) {
+		if (carriedApps.length === 1 && typeof carriedApps[0].version === 'string' && carriedApps[0].version.length > 0) {
 			requiresAppVersion = carriedApps[0].version;
 			console.log(`requires.app defaulted to the carried app version ${requiresAppVersion}`);
 		} else {
@@ -401,9 +424,8 @@ async function main() {
 
 	const components = [];
 	if (carryComponentIds.size > 0) {
-		const previous = JSON.parse(readFileSync(carryAppsFrom, 'utf8'));
 		// Every entry for the id, so a component published as several variants keeps all of them.
-		for (const entry of previous.components ?? []) {
+		for (const entry of carriedDocument.components ?? []) {
 			if (carryComponentIds.has(entry.id)) {
 				components.push(entry);
 				console.log(`carrying component ${entry.id} ${entry.version} from the previous document`);
@@ -496,6 +518,12 @@ async function main() {
 	if (componentsOnly) {
 		console.log(`components-only publish: no app entry generated, ${apps.length} carried, `
 			+ `requires.app pinned to ${requiresAppVersion}`);
+	}
+	if (!componentsOnly && artifactsBase && !releaseBase) {
+		// The CDN base satisfies the URL the document points clients at, but the installer BYTES
+		// still have to come from somewhere to be hashed and mirrored. Without this the failure is
+		// a bare "Invalid URL" from deep inside the fetch.
+		throw new Error('an app entry needs --app-release-base: the release URL the installers are fetched from for hashing and mirroring');
 	}
 	if (!componentsOnly && (releaseBase || artifactsBase)) {
 		const installerNames = config.app?.installers ?? {};

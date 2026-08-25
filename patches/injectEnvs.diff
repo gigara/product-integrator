@@ -220,7 +220,7 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/terminal/common/sc
 ===================================================================
 --- product-integrator.orig/lib/vscode/src/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh
 +++ product-integrator/lib/vscode/src/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh
-@@ -97,6 +97,84 @@ if [ -n "${VSCODE_ENV_APPEND:-}" ]; then
+@@ -97,6 +97,86 @@ if [ -n "${VSCODE_ENV_APPEND:-}" ]; then
  	builtin unset VSCODE_ENV_APPEND
  fi
  
@@ -262,7 +262,7 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/terminal/common/sc
 +		fi
 +
 +		IFS=':' read -ra __vsc_current_path_entries <<< "${PATH:-}"
-+		for __vsc_entry in "${__vsc_current_path_entries[@]}"; do
++		for __vsc_entry in ${__vsc_current_path_entries[@]+"${__vsc_current_path_entries[@]}"}; do
 +			[ -n "$__vsc_entry" ] || continue
 +			__vsc_entry_for_match="$(printf '%s' "$__vsc_entry" | tr '[:upper:]' '[:lower:]')"
 +			if [ -n "$__vsc_regex" ] && [[ "$__vsc_entry_for_match" =~ $__vsc_regex ]]; then
@@ -270,7 +270,7 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/terminal/common/sc
 +			fi
 +
 +			__vsc_skip_entry=0
-+			for __vsc_runtime_entry in "${__vsc_runtime_entries[@]}"; do
++			for __vsc_runtime_entry in ${__vsc_runtime_entries[@]+"${__vsc_runtime_entries[@]}"}; do
 +				if [[ "$__vsc_entry" == "$__vsc_runtime_entry" ]]; then
 +					__vsc_skip_entry=1
 +					break
@@ -283,9 +283,11 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/terminal/common/sc
 +			__vsc_filtered_path_entries+=("$__vsc_entry")
 +		done
 +
-+		__vsc_final_path_entries=("${__vsc_runtime_prepend_entries[@]}" "${__vsc_filtered_path_entries[@]}" "${__vsc_runtime_append_entries[@]}")
++		# ${arr[@]+...}: on macOS's bash 3.2 an empty array expanded as "${arr[@]}" is an unbound
++		# variable under a user's `set -u`; this idiom expands to nothing instead of aborting.
++		__vsc_final_path_entries=(${__vsc_runtime_prepend_entries[@]+"${__vsc_runtime_prepend_entries[@]}"} ${__vsc_filtered_path_entries[@]+"${__vsc_filtered_path_entries[@]}"} ${__vsc_runtime_append_entries[@]+"${__vsc_runtime_append_entries[@]}"})
 +		__vsc_new_path=""
-+		for __vsc_entry in "${__vsc_final_path_entries[@]}"; do
++		for __vsc_entry in ${__vsc_final_path_entries[@]+"${__vsc_final_path_entries[@]}"}; do
 +			if [ -z "$__vsc_new_path" ]; then
 +				__vsc_new_path="$__vsc_entry"
 +			else
@@ -750,7 +752,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/product/common/runtimeEnvir
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/product/common/runtimeEnvironment.ts
-@@ -0,0 +1,422 @@
+@@ -0,0 +1,425 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -982,7 +984,10 @@ Index: product-integrator/lib/vscode/src/vs/platform/product/common/runtimeEnvir
 +		if (typeof override === 'string' && override.length > 0) {
 +			return override;
 +		}
-+		return fallback ?? '';
++		// No override and no fallback: keep the token verbatim. Substituting '' would quietly turn
++		// a segment like `${COMPONENT:x}/bin` into the absolute path `/bin`; an unresolved token is
++		// visibly broken instead of subtly wrong.
++		return fallback ?? _match;
 +	});
 +}
 +

@@ -713,11 +713,16 @@ jobs:
       # app-specific password generated at appleid.apple.com, not the account password.
       - name: Notarize and staple (macOS ${{ matrix.arch }})
         if: ${{ inputs.build_packed_installers == true }}
+        # The job's default working-directory is lib/vscode, where installers/mac does not exist —
+        # without this override the loop below finds nothing, skips everything, and exits 0: a green
+        # step that notarized nothing.
+        working-directory: .
         env:
           NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
           NOTARY_APP_PASSWORD: ${{ secrets.NOTARY_APP_PASSWORD }}
           NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
         run: |
+          set -euo pipefail
           V="${{ needs.resolve-versions.outputs.integrator_version }}"
           DMG="installers/mac/wso2-integrator-${V}-${{ matrix.arch }}.dmg"
           PKG="installers/mac/wso2-integrator-${V}-${{ matrix.arch }}.pkg"
@@ -725,6 +730,7 @@ jobs:
             echo "Notarization credentials not set — skipping notarization (build is signed but not notarized)."
             exit 0
           fi
+          NOTARIZED=0
           for ARTIFACT in "$DMG" "$PKG"; do
             [ -f "$ARTIFACT" ] || continue
             echo "Notarizing $ARTIFACT"
@@ -734,7 +740,14 @@ jobs:
               --team-id "$NOTARY_TEAM_ID" \
               --wait
             xcrun stapler staple "$ARTIFACT"
+            NOTARIZED=$((NOTARIZED + 1))
           done
+          # Credentials were provided, so notarizing nothing is a failure, not a skip: it means the
+          # artifacts are not where this step expects them.
+          if [ "$NOTARIZED" -eq 0 ]; then
+            echo "::error::No DMG or PKG found to notarize under $(pwd)/installers/mac" >&2
+            exit 1
+          fi
 
       - name: Login to AWS
         if: ${{ env.HAS_AWS == 'true' }}

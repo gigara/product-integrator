@@ -151,8 +151,8 @@ mv "$ICP_UNZIPPED_PATH"/* "$ICP_TARGET"
 rm -rf "$ICP_UNZIPPED_PATH"
 chmod +x "$ICP_TARGET/bin"/*
 
-# Make icp.sh resolve the JVM env-aware (§D8): prefer the relocated JRE dir advertised by the
-# product runtime environment (WSO2_INTEGRATOR_JRE_DIR — set once ICP/JRE are seeded to the data
+# Make icp.sh resolve the JVM env-aware (§D8): prefer the resolved JDK home advertised by the
+# product runtime environment (WSO2_INTEGRATOR_JRE_HOME — set once ICP/JRE are seeded to the data
 # folder), else fall back to the JRE bundled next to ICP (../../dependencies). Replace icp's bare
 # `java` calls with $WSO2_ICP_JAVA, then prepend a resolver that sets it (added AFTER the replace
 # so its own `bin/java` isn't itself rewritten). Backward-compatible: with the env var unset it
@@ -176,7 +176,10 @@ EOF
         tail -n +2 "$ICP_SCRIPT"
     } > "$ICP_TMP"
     mv "$ICP_TMP" "$ICP_SCRIPT"
-    chmod +x "$ICP_SCRIPT"
+    # 755 explicitly, not +x: the temp file was created 0600, and an icp.sh that group/other cannot
+    # READ cannot be executed by them either (the interpreter has to read it). Root-owned installs
+    # (deb/rpm) would otherwise ship an ICP that only root can launch.
+    chmod 755 "$ICP_SCRIPT"
 fi
 
 # Fix ZIP epoch timestamps — unzip preserves 1980-01-01 dates from ZIP archives

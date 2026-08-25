@@ -1,7 +1,7 @@
 Prevent builtin extensions from being updated
 
 Updating builtin extensions from the marketplace prevents us from patching them
-(for example out GitHub authentication patches).
+(for example our GitHub authentication patches).
 
 Index: product-integrator/lib/vscode/src/vs/workbench/contrib/extensions/browser/extensionsWorkbenchService.ts
 ===================================================================

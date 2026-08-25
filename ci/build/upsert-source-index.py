@@ -39,7 +39,9 @@ def matches(version, selector):
     if selector in ("*", ""):
         return True
     if any(c in selector for c in "<>="):
-        return None  # unknown; treated as "cannot rule out"
+        # Ranges are skipped: deciding whether one range subsumes another is a different problem,
+        # and None is falsy at the call site — a range above is treated as NOT shadowing.
+        return None
     want, have = selector.split("."), version.split(".")
     for i, segment in enumerate(want):
         if segment in ("x", "X", "*"):
@@ -83,7 +85,14 @@ def main():
     probe = sample_version(args.selector)
     if probe is not None:
         for earlier in entries[:position]:
-            if matches(probe, earlier.get("match", "")):
+            earlier_selector = earlier.get("match", "").strip()
+            # An exact-version entry above (a pinned hotfix) matches exactly one version; it cannot
+            # shadow a broader selector, and the probe colliding with it is the false positive that
+            # would refuse the exact layout this ordering exists to support.
+            if earlier_selector and "x" not in earlier_selector and "X" not in earlier_selector \
+                    and "*" not in earlier_selector and not any(c in earlier_selector for c in "<>="):
+                continue
+            if matches(probe, earlier_selector):
                 sys.exit(
                     f"error: index entry '{args.selector}' -> {args.manifest} is unreachable: entry "
                     f"'{earlier.get('match')}' above it already matches {probe}, and the first match "

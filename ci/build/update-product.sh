@@ -42,11 +42,25 @@ WSO2_UPDATE_URL=${WSO2_UPDATE_URL:-""}
 # allowlist + per-artifact sha256). Set WSO2_UPDATE_PUBLIC_KEY to `base64 < cosign.pub`
 # to enforce signature verification.
 WSO2_UPDATE_PUBLIC_KEY=${WSO2_UPDATE_PUBLIC_KEY:-""}
+# GNU base64 wraps at 76 columns; a wrapped value pasted into the secret would break the JSON
+# heredoc below. Whitespace is not part of base64, so stripping it is always safe.
+WSO2_UPDATE_PUBLIC_KEY=$(printf '%s' "${WSO2_UPDATE_PUBLIC_KEY}" | tr -d '[:space:]')
+if [ -n "${WSO2_UPDATE_PUBLIC_KEY}" ] && ! printf '%s' "${WSO2_UPDATE_PUBLIC_KEY}" | grep -Eq '^[A-Za-z0-9+/=]+$'; then
+  echo "Error: WSO2_UPDATE_PUBLIC_KEY is not base64 (expected \`base64 < cosign.pub\`)." >&2
+  exit 1
+fi
 
 # Reject an artifact that declares no cosign signature. Left false until every artifact the
 # manifest can reference is mirrored to the WSO2 bucket (only mirrored artifacts can be signed by
 # us), because a third-party source URL would otherwise fail verification it can never pass.
 WSO2_UPDATE_REQUIRE_ARTIFACT_SIGNATURE=${WSO2_UPDATE_REQUIRE_ARTIFACT_SIGNATURE:-"false"}
+# Emitted unquoted into product.json, so it must be a JSON boolean; anything else would ship an
+# invalid file discovered only at app startup.
+case "${WSO2_UPDATE_REQUIRE_ARTIFACT_SIGNATURE}" in
+  true|false) ;;
+  "") WSO2_UPDATE_REQUIRE_ARTIFACT_SIGNATURE="false" ;;
+  *) echo "Error: WSO2_UPDATE_REQUIRE_ARTIFACT_SIGNATURE must be 'true' or 'false', got '${WSO2_UPDATE_REQUIRE_ARTIFACT_SIGNATURE}'." >&2; exit 1 ;;
+esac
 
 # Stock VS Code update feed (Squirrel.Mac via darwinUpdateService). Set STOCK_UPDATE_URL
 # ONLY for macOS builds — enabling it also activates the win32/linux stock update paths,
@@ -90,6 +104,11 @@ fi
 # wi/wi-extension/package.json, which is what package-vsix.js names the .vsix from.
 WI_EXTENSION_VERSION=$(read_version "wi.extension.version")
 require_non_empty "${WI_EXTENSION_VERSION}" "wi.extension.version"
+# The in-app updater compares against these as its bundled baseline; an empty one ships a
+# product.json the updater mis-compares at runtime instead of failing this build.
+require_non_empty "${BALLERINA_RUNTIME_VERSION}" "ballerina.version"
+require_non_empty "${BALLERINA_JRE_VERSION}" "ballerina.jre.version"
+require_non_empty "${ICP_VERSION}" "icp.version"
 
 cat > lib/vscode/product.json <<EOF
 {

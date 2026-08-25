@@ -18,7 +18,7 @@ Index: product-integrator/lib/vscode/src/main.ts
  		}
  
  		const productMeta = product as unknown as IProductMeta;
-@@ -292,25 +294,48 @@ async function startup(codeCachePath: st
+@@ -292,25 +294,56 @@ async function startup(codeCachePath: st
  		// installed under the user's data folder so `${COMPONENT:<id>}` tokens in
  		// `runtimeEnv` point at the updated copy instead of the bundled one. Failures
  		// here are non-fatal: we fall back to the bundled paths.
@@ -48,7 +48,15 @@ Index: product-integrator/lib/vscode/src/main.ts
 +						for (const [id, entry] of Object.entries(components as { [id: string]: { active?: { path?: string } } })) {
 +							const activePath = entry.active?.path;
 +							if (typeof activePath === 'string' && activePath.length > 0) {
-+								overrides[id] = path.normalize(path.isAbsolute(activePath) ? activePath : path.join(dataFolderHome, activePath));
++								const resolved = path.normalize(path.isAbsolute(activePath) ? activePath : path.join(dataFolderHome, activePath));
++								// A manifest can outlive its directory (a user wiping the components
++								// dir, say). An override pointing at nothing must lose to the seeded
++								// or bundled fallback, not replace it with a dead path.
++								if (fs.existsSync(resolved)) {
++									overrides[id] = resolved;
++								} else {
++									console.warn(`Component override for ${id} points at a missing directory; falling back:`, resolved);
++								}
 +							}
 +						}
 +					}
@@ -77,7 +85,7 @@ Index: product-integrator/lib/vscode/src/main.ts
  						}
  					}
  				}
-@@ -320,10 +345,127 @@ async function startup(codeCachePath: st
+@@ -320,10 +353,127 @@ async function startup(codeCachePath: st
  			return overrides;
  		};
  
@@ -268,7 +276,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Updat
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Update.ts
-@@ -0,0 +1,242 @@
+@@ -0,0 +1,249 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -483,6 +491,13 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/common/wso2Updat
 +	recordExtensionInstalled(id: string, version: string): Promise<void>;
 +
 +	/**
++	 * Claims a staged extension for installation. Every open window reacts to the Downloaded state,
++	 * so without a claim N windows would install the same VSIX N times concurrently; the main
++	 * process grants exactly one claim per (id, version).
++	 */
++	claimStagedExtension(id: string, version: string): Promise<boolean>;
++
++	/**
 +	 * Called once the renderer has finished applying everything staged by the last download.
 +	 * Leaves the `Downloaded` state behind so the "Restart to Finish Updating Components"
 +	 * affordances stop showing for work that is already applied — unless a runtime is still
@@ -515,7 +530,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/wso2ComponentUpdateService.ts
-@@ -0,0 +1,1337 @@
+@@ -0,0 +1,1441 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -595,19 +610,27 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +const ALLOWED_HOST_SUFFIXES = ['wso2.com'];
 +
 +/**
-+ * A component artifact is hundreds of MB, so a single transient network fault must not throw the
-+ * whole update away. Attempts are spaced out rather than immediate: the faults worth retrying
-+ * (refused HTTP/2 stream, reset connection, 5xx, 429) are usually a server or link under momentary
-+ * pressure, which an instant retry only adds to.
-+ */
-+/**
 + * Minimum gap between download-progress events. Chosen to be visibly live without making the title
 + * bar re-render on every network chunk.
 + */
 +const PROGRESS_INTERVAL_MS = 400;
 +
++/**
++ * A component artifact is hundreds of MB, so a single transient network fault must not throw the
++ * whole update away. Attempts are spaced out rather than immediate: the faults worth retrying
++ * (refused HTTP/2 stream, reset connection, 5xx, 429) are usually a server or link under momentary
++ * pressure, which an instant retry only adds to.
++ */
 +const DOWNLOAD_ATTEMPTS = 3;
 +const DOWNLOAD_RETRY_DELAYS_MS = [3000, 10000];
++
++/**
++ * Shape every server-supplied id and version must have before it is used in a filesystem path.
++ * stageRuntime() removes and renames directories built from these values, so anything that could
++ * traverse (`..`, a separator, a leading dot) must be refused at the trust boundary, not sanitized.
++ */
++const SAFE_PATH_SEGMENT = /^[0-9A-Za-z][0-9A-Za-z.+_-]*$/;
++const isSafePathSegment = (value: string): boolean => SAFE_PATH_SEGMENT.test(value) && !value.includes('..');
 +
 +/**
 + * What the manifest CLAIMS an artifact is. The signed statement fetched at download time must agree
@@ -848,15 +871,31 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +			const appUpdate = this.resolveAppUpdate(response);
 +
 +			if (updates.length === 0 && !appUpdate) {
-+				this.setState({ type: Wso2UpdateStateType.Idle });
++				// Staged runtimes are deliberately not offered again, so "nothing on offer" does not
++				// mean "nothing to do": a pending component still needs its restart, and collapsing
++				// to Idle here would silently remove the restart affordance an hour after download.
++				this.setState(this.hasPendingComponents()
++					? { type: Wso2UpdateStateType.Downloaded, restartRequired: true, stagedExtensions: [] }
++					: { type: Wso2UpdateStateType.Idle });
 +			} else {
 +				this.setState({ type: Wso2UpdateStateType.UpdatesAvailable, updates, appUpdate });
 +			}
 +		} catch (err) {
 +			this.logService.warn('[wso2Update] check failed', err);
-+			// Background checks fail quietly; explicit checks surface an error state.
-+			this.setState(explicit ? { type: Wso2UpdateStateType.Error, message: String(err) } : { type: Wso2UpdateStateType.Idle });
++			// Background checks fail quietly; explicit checks surface an error state. A pending
++			// restart survives either way, for the same reason as above.
++			if (this.hasPendingComponents()) {
++				this.setState({ type: Wso2UpdateStateType.Downloaded, restartRequired: true, stagedExtensions: [] });
++			} else {
++				this.setState(explicit ? { type: Wso2UpdateStateType.Error, message: String(err) } : { type: Wso2UpdateStateType.Idle });
++			}
 +		}
++	}
++
++	/** Whether any runtime component is staged and waiting for a restart to activate. */
++	private hasPendingComponents(): boolean {
++		const local = readLocalManifest(this.componentsHome);
++		return !!local && Object.values(local.components).some(entry => !!entry.pending);
 +	}
 +
 +	/**
@@ -885,6 +924,10 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		const context = await this.requestService.request({
 +			type: 'POST',
 +			url,
++			// followRedirects 0: the request service re-sends the FULL options -- Authorization
++			// included -- to a redirect target, and isAllowedUrl() saw only the original URL. A
++			// redirect would therefore both leave the allowlist and leak the entitlement token.
++			followRedirects: 0,
 +			headers: { 'Content-Type': 'application/json', ...(this.authHeaders(url) ?? {}) },
 +			data: JSON.stringify(payload),
 +			callSite: 'wso2Update.checkForUpdates'
@@ -949,6 +992,13 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		const projected = this.projectedVersions(response);
 +		const offered: IWso2AvailableUpdate[] = [];
 +		for (const component of response.components) {
++			// Trust boundary: these two values become path segments (stage, rm, rename). Refuse a
++			// shape that could traverse rather than sanitizing it -- there is nothing legitimate to
++			// recover from a component id of `..`.
++			if (!isSafePathSegment(component.id) || !isSafePathSegment(component.version)) {
++				this.logService.warn(`[wso2Update] ignoring offer with unsafe id/version: '${component.id}' '${component.version}'`);
++				continue;
++			}
 +			const activeVersion = this.activeVersion(component.id, local);
 +			// Forward-only, enforced here and not merely upstream: this is what stops a stale or
 +			// tampered answer from reinstalling an older component over a newer one.
@@ -1019,7 +1069,11 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +	 */
 +	private satisfiesRange(version: string, range: string): boolean {
 +		for (const comparator of range.trim().split(/\s+/).filter(Boolean)) {
-+			const match = /^(>=|<=|>|<|==|=)?\s*(.+)$/.exec(comparator);
++			// The version part must actually look like a version: without this the regex matches any
++			// token, so a range written for a richer grammar (`^5.1.0`, `~5.1`) would compare garbage
++			// and fail CLOSED -- withholding the component -- instead of taking the documented
++			// accept-what-we-don't-understand path.
++			const match = /^(>=|<=|>|<|==|=)?\s*([0-9][0-9A-Za-z.+_-]*)$/.exec(comparator);
 +			if (!match) {
 +				this.logService.trace(`[wso2Update] unrecognized version comparator '${comparator}'; accepting`);
 +				continue;
@@ -1078,16 +1132,19 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +			return;
 +		}
 +
-+		// Which of the server's offers to take. Explicit ids act directly on the answer so a single
-+		// component can be updated from the Components view; otherwise take everything currently
-+		// offered.
++		// Which of the server's offers to take. Everything flows through resolveOfferedUpdates() so
++		// the explicit-ids path (a single component from the Components view) is held to the same
++		// gates as "download everything": forward-only, not already staged, not auto-reverted,
++		// requirements met. Filtering the raw response by id alone would let a click re-stage the
++		// currently ACTIVE version, whose staging step deletes the live runtime directory first.
++		const eligible = new Set(this.resolveOfferedUpdates(response).map(u => u.id));
 +		let targetComponents: IWso2ComponentOffer[];
 +		if (componentIds && componentIds.length) {
 +			const wanted = new Set(componentIds);
-+			targetComponents = response.components.filter(c => wanted.has(c.id));
++			targetComponents = response.components.filter(c => wanted.has(c.id) && eligible.has(c.id));
 +		} else if (this._state.type === Wso2UpdateStateType.UpdatesAvailable) {
 +			const offered = new Set(this._state.updates.map(u => u.id));
-+			targetComponents = response.components.filter(c => offered.has(c.id));
++			targetComponents = response.components.filter(c => offered.has(c.id) && eligible.has(c.id));
 +		} else {
 +			targetComponents = [];
 +		}
@@ -1141,6 +1198,10 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +	}
 +
 +	private async downloadExtension(component: IWso2ComponentOffer): Promise<string> {
++		// Same trust boundary as stageRuntime: id and version become path segments.
++		if (!isSafePathSegment(component.id) || !isSafePathSegment(component.version)) {
++			throw new Error(`Unsafe component id/version: '${component.id}' '${component.version}'`);
++		}
 +		const dir = path.join(this.stagingHome, component.id, component.version);
 +		await fs.promises.mkdir(dir, { recursive: true });
 +		const vsixPath = path.join(dir, `${component.id}-${component.version}.vsix`);
@@ -1155,9 +1216,17 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +	}
 +
 +	private async stageRuntime(component: IWso2ComponentOffer): Promise<void> {
++		// Defense in depth behind resolveOfferedUpdates(): this method removes and renames
++		// directories built from these values, so it re-checks them rather than trusting every
++		// caller to have filtered.
++		if (!isSafePathSegment(component.id) || !isSafePathSegment(component.version)) {
++			throw new Error(`Unsafe component id/version: '${component.id}' '${component.version}'`);
++		}
 +		this.logService.info(`[wso2Update] staging runtime ${component.id}@${component.version} from ${component.artifact.url}`);
 +		const stagingDir = path.join(this.stagingHome, component.id, component.version);
-+		await fs.promises.rm(stagingDir, { recursive: true, force: true });
++		// The archive is kept across attempts: downloadAndVerify() reuses an existing file whose
++		// sha256 already matches, so a failure after the download (extract, rename) retries without
++		// re-fetching hundreds of MB. Only the extracted tree is discarded, below.
 +		await fs.promises.mkdir(stagingDir, { recursive: true });
 +
 +		const archivePath = path.join(stagingDir, `${component.id}-${component.version}.zip`);
@@ -1170,7 +1239,10 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		});
 +		this.logService.info(`[wso2Update] verified ${component.id}@${component.version}; extracting`);
 +
++		// A crashed earlier attempt may have left a partial tree here; extracting over it would
++		// merge stale files into the new version. The archive above is the only thing worth reusing.
 +		const extractDir = path.join(stagingDir, 'extracted');
++		await fs.promises.rm(extractDir, { recursive: true, force: true });
 +		await extract(archivePath, extractDir, {}, CancellationToken.None);
 +		await fs.promises.rm(archivePath, { force: true });
 +
@@ -1280,7 +1352,14 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +	private async verifyArtifactStatement(url: string, expected: IArtifactExpectation): Promise<void> {
 +		const publicKey = decodePublicKey(this.productService.wso2UpdatePublicKey);
 +		if (!publicKey) {
-+			return; // no pinned key configured: sha256 + TLS + host allowlist only (dev/test builds)
++			// A build that REQUIRES signatures but cannot produce a usable key is misconfigured
++			// (corrupted pin, bad base64); degrading to sha256-only here would defeat the flag
++			// exactly when it matters. Without the flag, no pinned key means a dev/test build:
++			// sha256 + TLS + host allowlist only.
++			if (this.productService.wso2UpdateRequireArtifactSignature) {
++				throw new DownloadError(`Artifact signatures are required but the pinned public key is missing or unusable`, false);
++			}
++			return;
 +		}
 +		const signature = expected.signature;
 +		if (!signature?.statementUrl || !signature?.sigUrl) {
@@ -1333,7 +1412,8 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +	private async fetchTextOrThrow(url: string, callSite: string): Promise<string> {
 +		for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt++) {
 +			try {
-+				const context = await this.requestService.request({ url, headers: this.authHeaders(url), callSite }, CancellationToken.None);
++				// followRedirects 0: see fetchUpdates() -- a redirect escapes the host allowlist.
++				const context = await this.requestService.request({ url, headers: this.authHeaders(url), followRedirects: 0, callSite }, CancellationToken.None);
 +				const status = context.res.statusCode ?? 0;
 +				if (status !== 200) {
 +					throw new DownloadError(
@@ -1364,7 +1444,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +	private async downloadAttempt(url: string, destPath: string, expectedSha256: string): Promise<void> {
 +		this.logService.info(`[wso2Update] downloading ${url}`);
 +		const context = await this.requestService
-+			.request({ url, headers: this.authHeaders(url), callSite: 'wso2Update.download' }, CancellationToken.None)
++			.request({ url, headers: this.authHeaders(url), followRedirects: 0, callSite: 'wso2Update.download' }, CancellationToken.None)
 +			.catch(err => {
 +				// Never established, so nothing was written: always worth another attempt.
 +				throw new DownloadError(`Request failed for ${url}: ${err}`, true);
@@ -1452,11 +1532,12 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +				const existing = statuses.get(component.id);
 +				const activeVersion = this.activeVersion(component.id, local);
 +				const pendingVersion = local?.components[component.id]?.pending?.version;
-+				// Not "available" if already current, already staged (pending) at that version, or
-+				// its `requires` are unmet — mirrors resolveOfferedUpdates so Show Components and the
-+				// check command agree.
++				// Not "available" if already current, already staged (pending) at that version,
++				// auto-reverted after a crash loop, or its `requires` are unmet — mirrors
++				// resolveOfferedUpdates so Show Components and the check command agree.
 +				const availableVersion = ((!activeVersion || compareVersions(component.version, activeVersion) > 0)
 +					&& !(pendingVersion && compareVersions(pendingVersion, component.version) >= 0)
++					&& !local?.components[component.id]?.failed?.some(f => f.version === component.version)
 +					&& this.requiresSatisfied(component, local, projected))
 +					? component.version : undefined;
 +				statuses.set(component.id, {
@@ -1494,12 +1575,32 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		}
 +	}
 +
++	private readonly claimedExtensionInstalls = new Set<string>();
++
++	async claimStagedExtension(id: string, version: string): Promise<boolean> {
++		// Per app run, not persisted: a claim exists to serialize the windows reacting to one
++		// Downloaded event. If the winning install fails, its window reports the failure; a retry
++		// happens through a fresh download, which stages (and claims) anew.
++		const key = `${id}@${version}`;
++		if (this.claimedExtensionInstalls.has(key)) {
++			return false;
++		}
++		this.claimedExtensionInstalls.add(key);
++		return true;
++	}
++
 +	async recordExtensionInstalled(id: string, version: string): Promise<void> {
 +		this.updateLocalManifest(manifest => {
 +			const entry = manifest.components[id] ?? (manifest.components[id] = {});
 +			entry.bundledVersion = entry.bundledVersion ?? this.bundledVersion(id);
 +			entry.active = { version, via: 'user-extension', installedAt: new Date().toISOString(), healthy: true };
 +		});
++		// The staged VSIX has served its purpose; nothing re-reads it, so every kept copy is pure
++		// disk growth (extensions are tens of MB and update often).
++		if (isSafePathSegment(id) && isSafePathSegment(version)) {
++			await fs.promises.rm(path.join(this.stagingHome, id, version), { recursive: true, force: true })
++				.catch(err => this.logService.warn(`[wso2Update] could not clean staged ${id}@${version}`, err));
++		}
 +	}
 +
 +	/**
@@ -1509,6 +1610,12 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +	 * bootstrap auto-fallback still has a version to roll back to).
 +	 */
 +	private markHealthyAndGarbageCollect(): void {
++		// App-update leftovers (the MSI, the updater scripts, their logs) are one-shot: applying
++		// quits the app, so anything here at construction belongs to a finished or abandoned
++		// transaction. One MSI per version otherwise accumulates forever.
++		fs.promises.rm(getDownloadsHome(os.homedir(), this.dataFolderName), { recursive: true, force: true })
++			.catch(err => this.logService.warn('[wso2Update] could not clean update downloads', err));
++
 +		const manifest = readLocalManifest(this.componentsHome);
 +		if (!manifest) {
 +			return;
@@ -1543,7 +1650,9 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +		// seed baseline, §D8): its `${COMPONENT:*}` fallback target must never be collected, or a
 +		// revert-to-bundled after an update would strand the runtime. Key on the product's bundled
 +		// version too (not just the recorded entry, which may be unset).
-+		const keep = new Set([entry.active?.version, entry.previous?.version, entry.bundledVersion, this.bundledVersion(id)].filter((v): v is string => !!v));
++		// `pending` too: in the narrow window where activation's manifest write failed, the staged
++		// directory is still the next boot's input and must not be collected under it.
++		const keep = new Set([entry.active?.version, entry.previous?.version, entry.pending?.version, entry.bundledVersion, this.bundledVersion(id)].filter((v): v is string => !!v));
 +		for (const version of versions) {
 +			if (keep.has(version)) {
 +				continue;
@@ -1638,10 +1747,20 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +			// window even though this cmd is hidden; the .hta polls the status file and closes itself
 +			// once we write "done" just before relaunch.
 +			`start "" "%SYS%\\mshta.exe" "${splashPath}"`,
-+			// Wait for the editor (this PID) to fully exit so its install files are unlocked.
++			// Wait for the editor (this PID) to fully exit so its install files are unlocked. The
++			// wait is bounded (~10 min): if quit was vetoed (an unsaved-file dialog, say), the app
++			// may keep running indefinitely, and an updater still armed hours later would fire
++			// msiexec against a state nobody remembers scheduling. Giving up is recoverable -- the
++			// update is simply offered again -- an untimely install is not.
++			'set WAITED=0',
 +			':waitloop',
 +			`"%SYS%\\tasklist.exe" /fi "PID eq ${pid}" 2>nul | "%SYS%\\find.exe" "${pid}" >nul`,
 +			'if not errorlevel 1 (',
++			'  set /a WAITED+=1',
++			'  if %WAITED% geq 600 (',
++			`    echo done rc=timeout waiting for pid ${pid} %time% >> "${statusPath}"`,
++			'    exit /b 1',
++			'  )',
 +			'  "%SYS%\\ping.exe" -n 2 127.0.0.1 >nul',
 +			'  goto waitloop',
 +			')',
@@ -1857,7 +1976,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2Compone
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2ComponentsManifest.ts
-@@ -0,0 +1,492 @@
+@@ -0,0 +1,494 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -2077,8 +2196,10 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/node/wso2Compone
 +/**
 + * Crash-loop safety net (auto-fallback, §D5): a runtime override is activated as `healthy: false`
 + * and confirmed healthy by the update service once the app boots successfully. If the app never
-+ * reaches that point — e.g. a bad runtime crash-loops the main process — the override stays
-+ * unhealthy across boots. This is called at bootstrap (before the runtime env is resolved) and
++ * reaches that point, the override stays unhealthy across boots. Note the net's limit: the main
++ * process never loads these runtimes itself, so it catches an override that breaks BOOT (bad env
++ * resolution, unreadable directory) but not one that only breaks the language server or extension
++ * host after startup — those failures surface in the extension, not here. This is called at bootstrap (before the runtime env is resolved) and
 + * increments a per-override boot counter; once it exceeds `maxUnhealthyBoots` the override is
 + * automatically rolled back to the previous version (or the bundled baseline when no previous
 + * dir remains), so the app can start again. Extension shadow copies are excluded (the extension
@@ -2354,7 +2475,7 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 ===================================================================
 --- /dev/null
 +++ product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser/wso2Update.contribution.ts
-@@ -0,0 +1,484 @@
+@@ -0,0 +1,488 @@
 +/**
 + * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com) All Rights Reserved.
 + *
@@ -2805,6 +2926,10 @@ Index: product-integrator/lib/vscode/src/vs/workbench/contrib/wso2Update/browser
 +		let failed = 0;
 +		for (const ext of state.stagedExtensions) {
 +			try {
++				// Every window sees this event; the main process grants the install to exactly one.
++				if (!await this.updateService.claimStagedExtension(ext.id, ext.version)) {
++					continue;
++				}
 +				await this.extensionManagementService.install(URI.file(ext.vsixPath), { isBuiltin: true, pinned: true });
 +				await this.updateService.recordExtensionInstalled(ext.id, ext.version);
 +				installed++;

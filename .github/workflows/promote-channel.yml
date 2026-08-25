@@ -36,6 +36,12 @@ on:
           - beta
           - stable
 
+# Same group as the two publishers: promotion read-modify-writes the TARGET channel's index.json,
+# and racing a publish to that channel would drop whichever line the loser had repointed.
+concurrency:
+  group: update-index-${{ github.event.inputs.to_channel }}
+  cancel-in-progress: false
+
 permissions:
   id-token: write
   contents: read
