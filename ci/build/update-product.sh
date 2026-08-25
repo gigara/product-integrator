@@ -129,7 +129,6 @@ cat > lib/vscode/product.json <<EOF
     "newsletterSignupUrl": "https://www.research.net/r/vsc-newsletter",
     "linkProtectionTrustedDomains": [
       "https://*.wso2.com",
-      "https://open-vsx.org",
       "https://devant.dev",
       "https://console.devant.dev"
     ],
