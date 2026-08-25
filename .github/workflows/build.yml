@@ -32,6 +32,15 @@ on:
         default: true
         required: false
         type: boolean
+      # Publishing an update makes this build the one clients on its line are offered, so it is a
+      # release decision and every other caller must opt in explicitly. Defaults to false because a
+      # nightly also produces installers and a publish_tag, and would otherwise claim the release
+      # line by default.
+      publish_update_source:
+        description: 'Publish the update source document for this build. Release only.'
+        default: false
+        required: false
+        type: boolean
       run_smoke_tests:
         description: 'Whether to run the UI smoke tests. Only takes effect when build_packed_installers is true.'
         default: true
@@ -1591,6 +1600,7 @@ jobs:
     needs: [resolve-versions, publish-github-release]
     if: |
       always() &&
+      (inputs.publish_update_source == true) &&
       (needs.publish-github-release.result == 'success') &&
       (inputs.publish_tag != '') &&
       (inputs.build_packed_installers == true)
