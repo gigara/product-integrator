@@ -197,15 +197,28 @@ sign_app_bundle() {
     local app="$1"
     if [ -n "${MAC_SIGNING_IDENTITY:-}" ]; then
         print_info "Signing app with Developer ID identity: $MAC_SIGNING_IDENTITY ($app)"
+        # Executables and bundles get the entitlements (the union covers Electron + the bundled
+        # JVM, which needs jit/unsigned-exec-memory/dyld-env/library-validation exceptions);
+        # libraries get NONE -- entitlements on a dylib grant nothing and only widen what an
+        # auditor has to reason about.
         local SIGN_OPTS=(--force --timestamp --options runtime --entitlements "$ENTITLEMENTS" --sign "$MAC_SIGNING_IDENTITY")
+        local LIB_OPTS=(--force --timestamp --options runtime --sign "$MAC_SIGNING_IDENTITY")
 
-        # 1) Loose Mach-O content: libraries, native node addons, and executables inside the
-        #    bundled components (Ballerina/JVM/ICP). Sign these before the bundles that contain them.
+        # 1) Loose Mach-O content: libraries and native node addons first (no entitlements), then
+        #    executables inside the bundled components (Ballerina/JVM/ICP), then the repackaged CLI
+        #    under Resources/app/bin -- a bare Mach-O there is covered by no other pass, and one
+        #    unsigned executable fails notarization for the whole app.
         find "$app" -type f \( -name "*.dylib" -o -name "*.so" -o -name "*.node" -o -name "*.jnilib" \) -print0 \
-            | while IFS= read -r -d '' f; do codesign "${SIGN_OPTS[@]}" "$f"; done
+            | while IFS= read -r -d '' f; do codesign "${LIB_OPTS[@]}" "$f"; done
         if [ -d "$app/Contents/components" ]; then
             find "$app/Contents/components" -type f -perm +111 ! -name "*.jar" -print0 \
                 | while IFS= read -r -d '' f; do codesign "${SIGN_OPTS[@]}" "$f"; done
+        fi
+        if [ -d "$app/Contents/Resources/app/bin" ]; then
+            find "$app/Contents/Resources/app/bin" -type f -perm +111 -print0 \
+                | while IFS= read -r -d '' f; do
+                    if file "$f" | grep -q "Mach-O"; then codesign "${SIGN_OPTS[@]}" "$f"; fi
+                  done
         fi
 
         # 2) Nested bundles (Electron frameworks + helper .apps), deepest path first.

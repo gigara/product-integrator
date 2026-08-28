@@ -721,18 +721,34 @@ jobs:
           NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
           NOTARY_APP_PASSWORD: ${{ secrets.NOTARY_APP_PASSWORD }}
           NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          # Bound through env, never expanded into the script: the version derives from
+          # component-versions.properties on whatever ref was dispatched, and this step holds
+          # notarization credentials.
+          INTEGRATOR_VERSION: ${{ needs.resolve-versions.outputs.integrator_version }}
         run: |
           set -euo pipefail
-          V="${{ needs.resolve-versions.outputs.integrator_version }}"
+          V="$INTEGRATOR_VERSION"
           DMG="installers/mac/wso2-integrator-${V}-${{ matrix.arch }}.dmg"
           PKG="installers/mac/wso2-integrator-${V}-${{ matrix.arch }}.pkg"
           if [ -z "$NOTARY_APPLE_ID" ] || [ -z "$NOTARY_APP_PASSWORD" ] || [ -z "$NOTARY_TEAM_ID" ]; then
             echo "Notarization credentials not set — skipping notarization (build is signed but not notarized)."
             exit 0
           fi
-          NOTARIZED=0
+          # Submitting ad-hoc or unsigned artifacts can only fail at Apple's end, so without both
+          # signing identities this build is the documented unsigned fallback — skip, don't submit.
+          if [ -z "${MAC_SIGNING_IDENTITY:-}" ] || [ -z "${MAC_INSTALLER_SIGNING_IDENTITY:-}" ]; then
+            echo "Signing identities not available — skipping notarization (unsigned fallback build)."
+            exit 0
+          fi
+          # A signed release ships BOTH artifacts; notarizing a partial set would look green while
+          # publishing an un-notarized installer.
           for ARTIFACT in "$DMG" "$PKG"; do
-            [ -f "$ARTIFACT" ] || continue
+            if [ ! -f "$ARTIFACT" ]; then
+              echo "::error::expected artifact missing before notarization: $ARTIFACT" >&2
+              exit 1
+            fi
+          done
+          for ARTIFACT in "$DMG" "$PKG"; do
             echo "Notarizing $ARTIFACT"
             xcrun notarytool submit "$ARTIFACT" \
               --apple-id "$NOTARY_APPLE_ID" \
@@ -740,14 +756,7 @@ jobs:
               --team-id "$NOTARY_TEAM_ID" \
               --wait
             xcrun stapler staple "$ARTIFACT"
-            NOTARIZED=$((NOTARIZED + 1))
           done
-          # Credentials were provided, so notarizing nothing is a failure, not a skip: it means the
-          # artifacts are not where this step expects them.
-          if [ "$NOTARIZED" -eq 0 ]; then
-            echo "::error::No DMG or PKG found to notarize under $(pwd)/installers/mac" >&2
-            exit 1
-          fi
 
       - name: Login to AWS
         if: ${{ env.HAS_AWS == 'true' }}
