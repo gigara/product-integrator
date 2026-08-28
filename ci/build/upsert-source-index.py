@@ -17,38 +17,11 @@ Usage: upsert-source-index.py --index index.json --selector 5.1.x --manifest sou
 """
 import argparse
 import json
+import os
 import sys
 
-
-def sample_version(selector):
-    """A version this selector is meant to serve, or None if we cannot derive one.
-
-    Only exact and wildcard selectors are checked. Deciding whether one RANGE subsumes another is a
-    different problem, and guessing at it would produce false failures on a correct index.
-    """
-    selector = selector.strip()
-    if selector in ("*", ""):
-        return "999.999.999"
-    if any(c in selector for c in "<>="):
-        return None
-    return ".".join("0" if p in ("x", "X", "*") else p for p in selector.split("."))
-
-
-def matches(version, selector):
-    selector = selector.strip()
-    if selector in ("*", ""):
-        return True
-    if any(c in selector for c in "<>="):
-        # Ranges are skipped: deciding whether one range subsumes another is a different problem,
-        # and None is falsy at the call site — a range above is treated as NOT shadowing.
-        return None
-    want, have = selector.split("."), version.split(".")
-    for i, segment in enumerate(want):
-        if segment in ("x", "X", "*"):
-            return True
-        if i >= len(have) or have[i] != segment:
-            return False
-    return len(want) == len(have)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from update_index_common import find_unreachable  # noqa: E402
 
 
 def main():
@@ -82,22 +55,14 @@ def main():
         position = len(entries) - 1
 
     # An unreachable entry looks published and never arrives, so fail and let the operator reorder.
-    probe = sample_version(args.selector)
-    if probe is not None:
-        for earlier in entries[:position]:
-            earlier_selector = earlier.get("match", "").strip()
-            # An exact-version entry above (a pinned hotfix) matches exactly one version; it cannot
-            # shadow a broader selector, and the probe colliding with it is the false positive that
-            # would refuse the exact layout this ordering exists to support.
-            if earlier_selector and "x" not in earlier_selector and "X" not in earlier_selector \
-                    and "*" not in earlier_selector and not any(c in earlier_selector for c in "<>="):
-                continue
-            if matches(probe, earlier_selector):
-                sys.exit(
-                    f"error: index entry '{args.selector}' -> {args.manifest} is unreachable: entry "
-                    f"'{earlier.get('match')}' above it already matches {probe}, and the first match "
-                    f"wins. Move the more specific entry above it in index.json."
-                )
+    # Matching mirrors the update server's semantics (shared module), ranges included.
+    for _, sel, shadow in find_unreachable(entries):
+        if sel == args.selector:
+            sys.exit(
+                f"error: index entry '{sel}' -> {args.manifest} is unreachable: entry '{shadow}' "
+                f"above it already matches the clients it serves, and the first match wins. "
+                f"Move the more specific entry above it in index.json."
+            )
 
     index["entries"] = entries
     with open(args.index, "w") as f:

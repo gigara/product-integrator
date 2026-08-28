@@ -13,9 +13,13 @@ nothing is re-signed. The client resolves by channel path and never reads the do
 Usage: promote-update-channel.py <bucket> <from-channel> <to-channel>
 """
 import json
+import os
 import re
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from update_index_common import find_unreachable  # noqa: E402
 
 
 def aws(*args: str) -> subprocess.CompletedProcess:
@@ -102,6 +106,18 @@ def main() -> int:
                 break
         else:
             dst_index["entries"].append({"match": match, "manifest": manifest})
+
+    # Validate the COMPLETE target index with the server's own selector semantics before anything
+    # is written: promotion appends lines the target never served, and an entry shadowed by a
+    # broader one above it would look promoted while never being reachable.
+    unreachable = list(find_unreachable(dst_index["entries"]))
+    if unreachable:
+        for _, sel, shadow in unreachable:
+            print(f"error: target entry '{sel}' would be unreachable: '{shadow}' above it already "
+                  f"matches the clients it serves (first match wins)", file=sys.stderr)
+        print(f"fix the ordering in {target}/index.json (or the source index) and re-run",
+              file=sys.stderr)
+        return 1
 
     body = json.dumps(dst_index, indent=2) + "\n"
     print("--- promoted index ---")

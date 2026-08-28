@@ -1635,6 +1635,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          # This job only reads the repo; later steps hold signing and cloud credentials, so the
+          # checkout token must not persist into .git/config.
+          persist-credentials: false
           # Same ref every other job builds from. A caller that stamps a version branch passes it
           # as `ref`, and the source document is generated from ci/build/* plus
           # component-versions.properties — so checking out anything else would describe a build
@@ -1858,10 +1861,25 @@ jobs:
             echo '{"schemaVersion":1,"entries":[]}' > index.json
             echo "No index yet; creating one."
           fi
+          # The regression guard needs the sequence the line serves TODAY, read from the document
+          # its current index entry names. Without it the guard is inert and a publish could
+          # silently repoint the line to an older document.
+          CURRENT_ARGS=()
+          CURRENT_DOC=$(python3 -c "
+          import json,sys
+          entries = json.load(open('index.json')).get('entries', [])
+          print(next((e.get('manifest','') for e in entries if e.get('match') == sys.argv[1]), ''))
+          " "${SELECTOR}")
+          if [ -n "${CURRENT_DOC}" ] && aws s3 cp "${DEST}${CURRENT_DOC}" current-doc.json 2>/dev/null; then
+            CURRENT_SEQ=$(python3 -c "import json;print(json.load(open('current-doc.json')).get('sequence', 0))")
+            CURRENT_ARGS=(--current-sequence "${CURRENT_SEQ}")
+            echo "line ${SELECTOR} currently serves ${CURRENT_DOC} (sequence ${CURRENT_SEQ})"
+          fi
           python3 ci/build/upsert-source-index.py \
             --index index.json \
             --selector "${SELECTOR}" \
             --manifest "${DOC}" \
-            --sequence "${SEQUENCE}"
+            --sequence "${SEQUENCE}" \
+            "${CURRENT_ARGS[@]}"
           aws s3 cp index.json "${DEST}index.json" --content-type application/json --cache-control no-cache
           echo "Published ${CHANNEL} ${DOC} (sequence ${SEQUENCE}, targets ${{ steps.targets.outputs.targets }}) serving ${SELECTOR}"

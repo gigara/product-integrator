@@ -49,6 +49,9 @@ $content = Get-Content $icpScript -Raw
 $content = $content -replace '\bjava\b', '"%WSO2_ICP_JAVA%"'
 # Prepend an @-prefixed resolver line AFTER the replace, so its own `bin\java` is
 # not itself rewritten. Backward-compatible: falls back to the bundled JRE.
-$block = '@if defined WSO2_INTEGRATOR_JRE_HOME (set "WSO2_ICP_JAVA=%WSO2_INTEGRATOR_JRE_HOME%\bin\java") else (set "WSO2_ICP_JAVA=%~dp0..\..\dependencies\' + $jreDir + '\bin\java")' + [Environment]::NewLine
+# Default to the bundled JRE, then override only when the advertised JRE actually has a java.exe:
+# a stale or half-removed component env var must not point icp.bat at a nonexistent executable.
+$block = '@set "WSO2_ICP_JAVA=%~dp0..\..\dependencies\' + $jreDir + '\bin\java"' + [Environment]::NewLine +
+         '@if defined WSO2_INTEGRATOR_JRE_HOME if exist "%WSO2_INTEGRATOR_JRE_HOME%\bin\java.exe" set "WSO2_ICP_JAVA=%WSO2_INTEGRATOR_JRE_HOME%\bin\java"' + [Environment]::NewLine
 Set-Content -Path $icpScript -Value ($block + $content) -NoNewline
 Write-Host "Updated icp.bat (env-aware JRE, fallback $jreDir)"

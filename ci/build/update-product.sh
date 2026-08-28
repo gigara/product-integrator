@@ -45,6 +45,16 @@ WSO2_UPDATE_PUBLIC_KEY=${WSO2_UPDATE_PUBLIC_KEY:-""}
 # GNU base64 wraps at 76 columns; a wrapped value pasted into the secret would break the JSON
 # heredoc below. Whitespace is not part of base64, so stripping it is always safe.
 WSO2_UPDATE_PUBLIC_KEY=$(printf '%s' "${WSO2_UPDATE_PUBLIC_KEY}" | tr -d '[:space:]')
+# Decode-validate rather than pattern-match: a value that does not decode would ship inside
+# product.json and surface only as every client failing verification. GNU base64 uses -d,
+# BSD (macOS) historically -D; try both.
+if [ -n "${WSO2_UPDATE_PUBLIC_KEY}" ]; then
+  if ! printf '%s' "${WSO2_UPDATE_PUBLIC_KEY}" | base64 -d > /dev/null 2>&1 \
+     && ! printf '%s' "${WSO2_UPDATE_PUBLIC_KEY}" | base64 -D > /dev/null 2>&1; then
+    echo "Error: WSO2_UPDATE_PUBLIC_KEY is not valid base64 (expected: base64 < cosign.pub)." >&2
+    exit 1
+  fi
+fi
 if [ -n "${WSO2_UPDATE_PUBLIC_KEY}" ] && ! printf '%s' "${WSO2_UPDATE_PUBLIC_KEY}" | grep -Eq '^[A-Za-z0-9+/=]+$'; then
   echo "Error: WSO2_UPDATE_PUBLIC_KEY is not base64 (expected \`base64 < cosign.pub\`)." >&2
   exit 1

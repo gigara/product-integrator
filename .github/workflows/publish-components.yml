@@ -96,6 +96,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          # Read-only job with signing and cloud credentials in later steps: the checkout token
+          # must not persist into .git/config.
+          persist-credentials: false
           # The dispatched ref supplies both the component versions and the WI extension source.
           ref: ${{ inputs.ref || github.ref }}
           submodules: recursive
@@ -107,7 +110,8 @@ jobs:
           set -euo pipefail
           missing=()
           for f in ci/build/generate-update-manifest.mjs ci/build/update-manifest.config.json \
-                   ci/build/plan-component-publish.py ci/build/upsert-source-index.py; do
+                   ci/build/plan-component-publish.py ci/build/upsert-source-index.py \
+                   ci/build/update_index_common.py; do
             [ -f "$f" ] || missing+=("$f")
           done
           if [ ${#missing[@]} -gt 0 ]; then
@@ -210,6 +214,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REQUIRES_APP: ${{ inputs.requires_app_version }}
+          # Free-form dispatch input: bound through env, never expanded into the script, so shell
+          # syntax in the value stays data in a job that holds signing and cloud credentials.
+          CARRY_INPUT: ${{ inputs.carry_components }}
         run: |
           set -euo pipefail
           EXTRA=()
@@ -221,7 +228,7 @@ jobs:
           EXTRA+=(--source-flavors "wso2.ballerina=${{ inputs.ballerina_extension_source }},wso2.micro-integrator=${{ inputs.mi_extension_source }}")
           # Unchanged components are copied from the current document instead of re-mirrored. The
           # WI extension has its own toggle because carrying it also skips the build.
-          CARRY="${{ inputs.carry_components }}"
+          CARRY="${CARRY_INPUT}"
           if [ "${{ inputs.rebuild_wi_extension }}" != "true" ]; then
             CARRY="${CARRY:+${CARRY},}wso2.wso2-integrator"
           fi

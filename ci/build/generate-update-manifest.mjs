@@ -513,6 +513,13 @@ async function main() {
 	// Core-app entry. `appliesTo` is a range over the CLIENT's CURRENT version, which is how one
 	// document serves several release lines: publish 5.1.z with appliesTo ">=5.1.0 <5.2.0" and a
 	// 5.2.x client is simply not matched by it.
+	// Validated before the document is written and signed: Number() would turn garbage into NaN,
+	// which JSON.stringify serializes as null, and an out-of-range percentage would ship as-is.
+	const appRollout = Number(args['app-rollout'] ?? 100);
+	if (!Number.isInteger(appRollout) || appRollout < 0 || appRollout > 100) {
+		throw new Error(`--app-rollout must be an integer 0-100, got '${args['app-rollout']}'`);
+	}
+
 	const apps = [...carriedApps];
 	const releaseBase = typeof args['app-release-base'] === 'string' ? args['app-release-base'].replace(/\/+$/, '') : '';
 	if (componentsOnly) {
@@ -557,7 +564,7 @@ async function main() {
 				version: appVersion,
 				...(args['app-commit'] ? { commit: args['app-commit'] } : {}),
 				...(args['app-applies-to'] ? { appliesTo: args['app-applies-to'] } : {}),
-				rollout: { percentage: Number(args['app-rollout'] ?? 100) },
+				rollout: { percentage: appRollout },
 				targets: perTarget
 			});
 		}
