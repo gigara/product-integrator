@@ -28,9 +28,16 @@ configurable int port = 9600;
 configurable string dataDir = "data";
 
 // Channels the server will serve. Requests for any other channel are rejected
-// with 400. This is the only client-supplied path segment that is not a fixed
-// allowlist, so it is validated against this list to prevent path traversal.
+// with 400. Like allowedProducts, this is a client-supplied path segment, so it
+// is validated against this list to prevent path traversal.
 configurable string[] allowedChannels = ["stable", "beta", "insider"];
+
+// Product flavors served under a leading path segment, each with its own isolated store prefix:
+// /<product>/api/v1/updates reads manifests/<product>/<channel>/..., so one product's clients can
+// never be offered another product's builds. The bare routes (/api/v1/updates) remain the
+// integrator's. A product not in this list answers 404, which also makes the segment safe to join
+// into store paths.
+configurable string[] allowedProducts = ["agent-builder"];
 
 // ---- S3-backed store (production) ----
 // When s3Bucket is set, manifests and Squirrel feeds are read from
@@ -90,7 +97,8 @@ configurable boolean restrictAppUpdatesToMinorLine = true;
 // A list of EXCEPTIONS, not a routing table: the first entry whose `clients` selector matches wins,
 // and matching nothing falls through to the index. `clients` takes the same forms the index does —
 // an exact version (5.1.4), a wildcard (5.1.x, 5.x, *), or a range (">=5.1.0 <5.2.0"). Leave
-// `channel` unset to apply to every channel.
+// `channel` unset to apply to every channel of every product; a non-integrator product's channel
+// is named with its prefix ("agent-builder/insider"), like revocations.
 //
 //   [[lineOverrides]]
 //   clients = "5.1.x"
@@ -110,6 +118,10 @@ configurable LineOverride[] lineOverrides = [];
 // send a line back to the previous document without touching this.
 //
 // `platform` and `arch` default to "*", so the common case is one line naming a channel.
+//
+// A non-integrator product's channels are scoped with the product prefix, exactly as they appear
+// in the metrics: `channel = "agent-builder/insider"` withholds Agent Builder's insider channel
+// and nothing else, while `channel = "insider"` names only the integrator's.
 //
 //   [[revocations]]
 //   channel = "insider"

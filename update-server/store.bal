@@ -43,42 +43,73 @@ isolated function isSourceFile(string fileName) returns boolean {
 
 final readonly & string[] HEX = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"];
 
-// Reads one source-layout file for a channel — a release's document, its signature, or the index.
-// The server composes every response from these; clients never fetch them.
-function readSourceManifest(string channel, string fileName) returns [byte[], string]|error? {
+// The store prefix a product's manifests live under: "" for the integrator (the layout that
+// predates products) and "<product>/" for everything else, mirroring the CI publish layout
+// (manifests/agent-builder/<channel>/...).
+isolated function productPrefix(string product) returns string {
+    return product == "integrator" ? "" : product + "/";
+}
+
+// Guards every product value joined into a store path. The resources already 404 unknown
+// products; this keeps the store safe against any future caller that forgets to.
+isolated function validProduct(string product) returns boolean {
+    return product == "integrator" || allowedProducts.indexOf(product) is int;
+}
+
+// Reads one source-layout file for a product's channel — a release's document, its signature, or
+// the index. The server composes every response from these; clients never fetch them.
+function readSourceManifest(string product, string channel, string fileName) returns [byte[], string]|error? {
+    if !validProduct(product) {
+        return error(string `unsupported product: ${product}`);
+    }
     if allowedChannels.indexOf(channel) !is int {
         return error(string `unsupported channel: ${channel}`);
     }
     if !isSourceFile(fileName) {
         return error(string `unsupported file: ${fileName}`);
     }
+    string prefix = productPrefix(product);
     if s3Bucket != "" {
-        return readS3Artifact(string `manifests/${channel}/${fileName}`);
+        return readS3Artifact(string `manifests/${prefix}${channel}/${fileName}`);
     }
     if manifestsBaseUrl != "" {
-        return readHttpsArtifact(string `${channel}/${fileName}`);
+        return readHttpsArtifact(string `${prefix}${channel}/${fileName}`);
     }
-    string path = check file:joinPath(dataDir, "api", "v1", "updates", channel, fileName);
+    string path;
+    if product == "integrator" {
+        path = check file:joinPath(dataDir, "api", "v1", "updates", channel, fileName);
+    } else {
+        path = check file:joinPath(dataDir, "api", "v1", "updates", product, channel, fileName);
+    }
     return readArtifact(path);
 }
 
 // Admin publish of the source document.
-function writeSourceManifest(string channel, string fileName, byte[] content) returns error? {
+function writeSourceManifest(string product, string channel, string fileName, byte[] content) returns error? {
+    if !validProduct(product) {
+        return error(string `unsupported product: ${product}`);
+    }
     if allowedChannels.indexOf(channel) !is int {
         return error(string `unsupported channel: ${channel}`);
     }
     if !isSourceFile(fileName) {
         return error(string `unsupported file: ${fileName}`);
     }
+    string prefix = productPrefix(product);
     if s3Bucket != "" {
-        return writeS3Artifact(string `manifests/${channel}/${fileName}`, content);
+        return writeS3Artifact(string `manifests/${prefix}${channel}/${fileName}`, content);
     }
     if manifestsBaseUrl != "" {
         // Refuse rather than fall through to the local directory: in this mode reads come from the
         // public base URL, so a local write would appear to succeed and then never be served.
         return error("cannot publish while reading manifests over HTTPS; publish to the bucket instead");
     }
-    string path = check file:joinPath(dataDir, "api", "v1", "updates", channel, fileName);
+    string path;
+    if product == "integrator" {
+        path = check file:joinPath(dataDir, "api", "v1", "updates", channel, fileName);
+    } else {
+        path = check file:joinPath(dataDir, "api", "v1", "updates", product, channel, fileName);
+    }
     return writeArtifact(path, content);
 }
 
