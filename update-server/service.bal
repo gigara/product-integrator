@@ -63,27 +63,19 @@ service / on updateListener {
     // configured channel allowlist is returned as-is (informational; probing the
     // bucket per channel on every call would defeat the read cache).
     resource function get api/v1/channels() returns http:Response {
-        // Any remote store: the configured allowlist is the answer. Probing a bucket or CDN per
-        // channel on every call would defeat the read cache — and reporting an empty list because
-        // the LOCAL directory is empty (which it always is in a remote mode) reads as "nothing is
-        // published", which is exactly the wrong thing to tell someone debugging a quiet server.
-        if s3Bucket != "" || manifestsBaseUrl != "" {
-            return jsonResponse(200, {channels: allowedChannels.toJson()});
+        return handleChannels("integrator");
+    }
+
+    // Every client-facing read/check route also exists under a leading product segment
+    // (e.g. /agent-builder/api/v1/updates): each product flavor has its own isolated store
+    // prefix, so one product's clients can never be offered another product's builds. The
+    // bare routes remain the integrator's; an unknown product answers 404, which is also
+    // what keeps the segment safe to join into store paths.
+    resource function get [string product]/api/v1/channels() returns http:Response {
+        if !knownProduct(product) {
+            return jsonResponse(404, {'error: "unsupported product"});
         }
-        string[] available = [];
-        do {
-            foreach string channel in allowedChannels {
-                string channelDir = check file:joinPath(dataDir, "api", "v1", "updates", channel);
-                boolean exists = check file:test(channelDir, file:EXISTS);
-                if exists {
-                    available.push(channel);
-                }
-            }
-            return jsonResponse(200, {channels: available});
-        } on fail error e {
-            log:printError("failed to list channels", e);
-            return jsonResponse(500, {'error: "internal error"});
-        }
+        return handleChannels(product);
     }
 
     // Squirrel.Mac core-app update feed (macOS). Electron's autoUpdater polls
@@ -96,7 +88,118 @@ service / on updateListener {
     // a broken/missing manifest must never surface an error on each mac client's check.
     resource function get api/update/[string assetId]/[string quality]/[string clientCommit](
             http:Request request, string? wiversion) returns http:Response {
-        http:Response? denied = clientAuthGuard(request);
+        return handleSquirrelCheck("integrator", request, assetId, quality, clientCommit, wiversion);
+    }
+
+    // Product-scoped Squirrel feed (e.g. /agent-builder/api/update/...): agent-builder mac
+    // builds bake updateUrl = <base>/agent-builder, so the whole feed path arrives prefixed.
+    resource function get [string product]/api/update/[string assetId]/[string quality]/[string clientCommit](
+            http:Request request, string? wiversion) returns http:Response {
+        if !knownProduct(product) {
+            return jsonResponse(404, {'error: "unsupported product"});
+        }
+        return handleSquirrelCheck(product, request, assetId, quality, clientCommit, wiversion);
+    }
+
+    // The update check. The client reports what it has; the server decides what it should take.
+    resource function post api/v1/updates(http:Request request, @http:Payload UpdateCheckRequest body)
+            returns http:Response {
+        return handleUpdateCheck("integrator", request, body);
+    }
+
+    // Product-scoped update check (e.g. POST /agent-builder/api/v1/updates).
+    resource function post [string product]/api/v1/updates(http:Request request,
+            @http:Payload UpdateCheckRequest body) returns http:Response {
+        if !knownProduct(product) {
+            return jsonResponse(404, {'error: "unsupported product"});
+        }
+        return handleUpdateCheck(product, request, body);
+    }
+
+    // Admin: what this deployment is currently withholding. READ ONLY — revocations are deployment
+    // configuration now, so they change by redeploying, not by calling an endpoint. Kept because
+    // "what is being withheld right now, and why" is the first question during an incident. The
+    // admin surface is NOT product-scoped: one deployment serves every product, and the entries
+    // themselves carry product-scoped channels ("agent-builder/insider").
+    resource function get api/v1/admin/revocations(http:Request request) returns http:Response {
+        http:Response? denied = authGuard(request);
+        if denied is http:Response {
+            return denied;
+        }
+        return jsonResponse(200, {revocations: revocations.toJson()});
+    }
+
+    // Admin: in-memory update-check counters (per scope and per appVersion). Bearer adminToken.
+    resource function get api/v1/admin/metrics(http:Request request) returns http:Response {
+        http:Response? denied = authGuard(request);
+        if denied is http:Response {
+            return denied;
+        }
+        return jsonResponse(200, {checks: metricsSnapshot().toJson()});
+    }
+
+    // Admin publish of a source-layout file; see handlePublish.
+    resource function put api/v1/updates/[string channel]/[string fileName](http:Request request)
+            returns http:Response {
+        return handlePublish("integrator", request, channel, fileName);
+    }
+
+    // Product-scoped admin publish (e.g. PUT /agent-builder/api/v1/updates/<channel>/<file>).
+    resource function put [string product]/api/v1/updates/[string channel]/[string fileName](
+            http:Request request) returns http:Response {
+        if !knownProduct(product) {
+            return jsonResponse(404, {'error: "unsupported product"});
+        }
+        return handlePublish(product, request, channel, fileName);
+    }
+}
+
+// A product the deployment serves. "integrator" is implicit (the bare, prefix-less routes);
+// everything else must be allowlisted, which is also the path-traversal guard for the segment.
+isolated function knownProduct(string product) returns boolean {
+    return allowedProducts.indexOf(product) is int;
+}
+
+// The channel key a product's traffic is scoped under in metrics, revocations and line
+// overrides: the integrator keeps today's bare channel names; other products are prefixed
+// ("agent-builder/insider"), matching the store layout.
+isolated function productScope(string product, string channel) returns string {
+    return product == "integrator" ? channel : string `${product}/${channel}`;
+}
+
+// Lists the channels that currently have published content for one product.
+function handleChannels(string product) returns http:Response {
+    // Any remote store: the configured allowlist is the answer. Probing a bucket or CDN per
+    // channel on every call would defeat the read cache — and reporting an empty list because
+    // the LOCAL directory is empty (which it always is in a remote mode) reads as "nothing is
+    // published", which is exactly the wrong thing to tell someone debugging a quiet server.
+    if s3Bucket != "" || manifestsBaseUrl != "" {
+        return jsonResponse(200, {channels: allowedChannels.toJson()});
+    }
+    string[] available = [];
+    do {
+        foreach string channel in allowedChannels {
+            string channelDir;
+            if product == "integrator" {
+                channelDir = check file:joinPath(dataDir, "api", "v1", "updates", channel);
+            } else {
+                channelDir = check file:joinPath(dataDir, "api", "v1", "updates", product, channel);
+            }
+            boolean exists = check file:test(channelDir, file:EXISTS);
+            if exists {
+                available.push(channel);
+            }
+        }
+        return jsonResponse(200, {channels: available});
+    } on fail error e {
+        log:printError("failed to list channels", e);
+        return jsonResponse(500, {'error: "internal error"});
+    }
+}
+
+function handleSquirrelCheck(string product, http:Request request, string assetId, string quality,
+        string clientCommit, string? wiversion) returns http:Response {
+    http:Response? denied = clientAuthGuard(request);
         if denied is http:Response {
             return denied;
         }
@@ -107,18 +210,19 @@ service / on updateListener {
         http:Response noUpdate = new;
         noUpdate.statusCode = 204;
         noUpdate.setHeader("Cache-Control", "no-store");
-        recordCheck(quality, assetId, arch, wiversion);
+        string scope = productScope(product, quality);
+        recordCheck(scope, assetId, arch, wiversion);
         // Kill-switch applies to the mac core app exactly like the component manifest.
-        if isRevoked(quality, "darwin", arch) {
+        if isRevoked(scope, "darwin", arch) {
             log:printInfo(string `squirrel feed withheld (revoked) quality=${quality} arch=${arch}`);
             return noUpdate;
         }
         do {
-            SourceManifest? src = check loadSource(quality, wiversion);
+            SourceManifest? src = check loadSource(product, quality, wiversion);
             if src is () {
                 return noUpdate; // nothing published for this channel
             }
-            boolean viaOverride = check overrideApplies(quality, wiversion);
+            boolean viaOverride = check overrideApplies(product, quality, wiversion);
             SourceApp? app = decideSquirrel(src, string `darwin-${arch}`, wiversion, viaOverride);
             if app is () {
                 return noUpdate; // no Squirrel payload for this target/line
@@ -160,71 +264,49 @@ service / on updateListener {
         }
     }
 
-    // Admin: list current kill-switch revocations. Bearer adminToken; 404 when disabled.
-    // The update check. The client reports what it has; the server decides what it should take.
-    //
-    // 204 means "nothing for you" and is also every failure mode: a broken or unpublished channel
-    // must degrade to "no updates", never to an error the client surfaces to a user who cannot act
-    // on it.
-    resource function post api/v1/updates(http:Request request, @http:Payload UpdateCheckRequest body)
-            returns http:Response {
-        http:Response? denied = clientAuthGuard(request);
-        if denied is http:Response {
-            return denied;
-        }
-        string channel = body?.channel ?: "stable";
-        http:Response nothing = new;
-        nothing.statusCode = 204;
-        nothing.setHeader("Cache-Control", "no-store");
+// The update check. The client reports what it has; the server decides what it should take.
+//
+// 204 means "nothing for you" and is also every failure mode: a broken or unpublished channel
+// must degrade to "no updates", never to an error the client surfaces to a user who cannot act
+// on it.
+function handleUpdateCheck(string product, http:Request request, UpdateCheckRequest body)
+        returns http:Response {
+    http:Response? denied = clientAuthGuard(request);
+    if denied is http:Response {
+        return denied;
+    }
+    string channel = body?.channel ?: "stable";
+    http:Response nothing = new;
+    nothing.statusCode = 204;
+    nothing.setHeader("Cache-Control", "no-store");
 
-        recordCheck(channel, body.platform, body.arch, body.appVersion);
-        // Kill-switch: withhold everything for a revoked scope so NEW clients take nothing, without
-        // rewriting or re-signing a thing.
-        if isRevoked(channel, body.platform, body.arch) {
-            log:printInfo(string `updates withheld (revoked) channel=${channel} platform=${body.platform} arch=${body.arch}`);
+    string scope = productScope(product, channel);
+    recordCheck(scope, body.platform, body.arch, body.appVersion);
+    // Kill-switch: withhold everything for a revoked scope so NEW clients take nothing, without
+    // rewriting or re-signing a thing.
+    if isRevoked(scope, body.platform, body.arch) {
+        log:printInfo(string `updates withheld (revoked) channel=${scope} platform=${body.platform} arch=${body.arch}`);
+        return nothing;
+    }
+    do {
+        SourceManifest? src = check loadSource(product, channel, body.appVersion);
+        if src is () {
             return nothing;
         }
-        do {
-            SourceManifest? src = check loadSource(channel, body.appVersion);
-            if src is () {
-                return nothing;
-            }
-            boolean viaOverride = check overrideApplies(channel, body.appVersion);
-            UpdateCheckResponse? decision = decideUpdates(src, body, viaOverride);
-            if decision is () {
-                return nothing;
-            }
-            log:printInfo(string `offering ${decision.components.length()} component(s)` +
-                string ` app=${decision?.app is AppOffer ? "yes" : "no"}` +
-                string ` to ${body.platform}-${body.arch} appVersion=${body.appVersion} channel=${channel}`);
-            return jsonResponse(200, decision.toJson());
-        } on fail error e {
-            log:printError("update check failed", e);
+        boolean viaOverride = check overrideApplies(product, channel, body.appVersion);
+        UpdateCheckResponse? decision = decideUpdates(src, body, viaOverride);
+        if decision is () {
             return nothing;
         }
+        log:printInfo(string `offering ${decision.components.length()} component(s)` +
+            string ` app=${decision?.app is AppOffer ? "yes" : "no"}` +
+            string ` to ${body.platform}-${body.arch} appVersion=${body.appVersion} channel=${scope}`);
+        return jsonResponse(200, decision.toJson());
+    } on fail error e {
+        log:printError("update check failed", e);
+        return nothing;
     }
-
-    // Admin: what this deployment is currently withholding. READ ONLY — revocations are deployment
-    // configuration now, so they change by redeploying, not by calling an endpoint. Kept because
-    // "what is being withheld right now, and why" is the first question during an incident, and
-    // reading it back from the running server beats trusting that the config you are looking at is
-    // the config that is deployed.
-    resource function get api/v1/admin/revocations(http:Request request) returns http:Response {
-        http:Response? denied = authGuard(request);
-        if denied is http:Response {
-            return denied;
-        }
-        return jsonResponse(200, {revocations: revocations.toJson()});
-    }
-
-    // Admin: in-memory update-check counters (per scope and per appVersion). Bearer adminToken.
-    resource function get api/v1/admin/metrics(http:Request request) returns http:Response {
-        http:Response? denied = authGuard(request);
-        if denied is http:Response {
-            return denied;
-        }
-        return jsonResponse(200, {checks: metricsSnapshot().toJson()});
-    }
+}
 
     // Admin publish of a source-layout file: a release's document, its signature, or the index.
     //
@@ -246,35 +328,35 @@ service / on updateListener {
     // sends the document as application/json (and its signature as text/plain), and data binding
     // rejects both of those against byte[] before the resource ever runs. The signature must also
     // survive byte-for-byte, so it is never round-tripped as JSON.
-    resource function put api/v1/updates/[string channel]/[string fileName](http:Request request)
-            returns http:Response {
-        http:Response? denied = authGuard(request);
-        if denied is http:Response {
-            return denied;
-        }
-        do {
-            byte[] body = check request.getBinaryPayload();
-            // Any source document: releases publish source-<version>.json. Signatures and the
-            // index are not documents and have no shape to check.
-            if fileName.startsWith("source") && fileName.endsWith(".json") {
-                // Reject a malformed document at publish time. Otherwise the failure surfaces
-                // later, on every client's update check, against a server that looks healthy.
-                string text = check string:fromBytes(body);
-                json parsed = check text.fromJsonString();
-                SourceManifest shape = check parsed.cloneWithType(SourceManifest);
-                if shape.schemaVersion != SOURCE_SCHEMA_VERSION {
-                    // `fail`, not `return`: the on-fail clause below turns this into the 400.
-                    fail error(string `document declares schemaVersion ${shape.schemaVersion}, `
-                        + string `but this server only understands ${SOURCE_SCHEMA_VERSION}.`);
-                }
+function handlePublish(string product, http:Request request, string channel, string fileName)
+        returns http:Response {
+    http:Response? denied = authGuard(request);
+    if denied is http:Response {
+        return denied;
+    }
+    do {
+        byte[] body = check request.getBinaryPayload();
+        // Any source document: releases publish source-<version>.json. Signatures and the
+        // index are not documents and have no shape to check.
+        if fileName.startsWith("source") && fileName.endsWith(".json") {
+            // Reject a malformed document at publish time. Otherwise the failure surfaces
+            // later, on every client's update check, against a server that looks healthy.
+            string text = check string:fromBytes(body);
+            json parsed = check text.fromJsonString();
+            SourceManifest shape = check parsed.cloneWithType(SourceManifest);
+            if shape.schemaVersion != SOURCE_SCHEMA_VERSION {
+                // `fail`, not `return`: the on-fail clause below turns this into the 400.
+                fail error(string `document declares schemaVersion ${shape.schemaVersion}, `
+                    + string `but this server only understands ${SOURCE_SCHEMA_VERSION}.`);
             }
-            check writeSourceManifest(channel, fileName, body);
-            log:printInfo(string `published ${channel}/${fileName} (${body.length()} bytes)`);
-            return jsonResponse(201, {status: "published", path: string `${channel}/${fileName}`});
-        } on fail error e {
-            log:printError("source publish failed", e);
-            return jsonResponse(400, {'error: e.message()});
         }
+        check writeSourceManifest(product, channel, fileName, body);
+        string scope = productScope(product, channel);
+        log:printInfo(string `published ${scope}/${fileName} (${body.length()} bytes)`);
+        return jsonResponse(201, {status: "published", path: string `${scope}/${fileName}`});
+    } on fail error e {
+        log:printError("source publish failed", e);
+        return jsonResponse(400, {'error: e.message()});
     }
 }
 
@@ -296,19 +378,19 @@ service / on updateListener {
 //
 // A client whose version matches no index entry gets NOTHING, deliberately: guessing a line for it
 // would mean offering a build from a line we were never asked to serve it.
-function loadSource(string channel, string? clientVersion = ()) returns SourceManifest|error? {
-    [string, boolean] [fileName, _] = check resolveSourceFileName(channel, clientVersion);
+function loadSource(string product, string channel, string? clientVersion = ()) returns SourceManifest|error? {
+    [string, boolean] [fileName, _] = check resolveSourceFileName(product, channel, clientVersion);
     if fileName == "" {
         return ();
     }
-    [byte[], string]|error? stored = readSourceManifest(channel, fileName);
+    [byte[], string]|error? stored = readSourceManifest(product, channel, fileName);
     if stored is error {
         return stored;
     }
     if stored is () {
         return ();
     }
-    check verifySource(channel, fileName, stored[0]);
+    check verifySource(product, channel, fileName, stored[0]);
     string text = check string:fromBytes(stored[0]);
     json parsed = check text.fromJsonString();
     SourceManifest src = check parsed.cloneWithType(SourceManifest);
@@ -331,9 +413,10 @@ function loadSource(string channel, string? clientVersion = ()) returns SourceMa
 //
 // Returns "" when a layer exists but covers no line this client belongs to, which is served as
 // "no updates" rather than a guess at which line the client should be on.
-function resolveSourceFileName(string channel, string? clientVersion) returns [string, boolean]|error {
+function resolveSourceFileName(string product, string channel, string? clientVersion) returns [string, boolean]|error {
     // Server-configured exceptions win outright; matching none of them falls through to the index.
-    string? overridden = lineOverrideFor(channel, clientVersion);
+    // Overrides are keyed by the product-scoped channel ("agent-builder/insider").
+    string? overridden = lineOverrideFor(productScope(product, channel), clientVersion);
     if overridden is string {
         if !isSourceFile(overridden) {
             // Configuration, not a missing file: say so rather than turning it into a store lookup
@@ -343,7 +426,7 @@ function resolveSourceFileName(string channel, string? clientVersion) returns [s
         log:printInfo(string `line override selected ${overridden} for client ${clientVersion ?: "<none>"}`);
         return [overridden, true];
     }
-    string? selected = check readSelector(channel, "index.json", clientVersion);
+    string? selected = check readSelector(product, channel, "index.json", clientVersion);
     if selected is () {
         return ["source.json", false]; // no index published: single-document layout
     }
@@ -355,14 +438,14 @@ function resolveSourceFileName(string channel, string? clientVersion) returns [s
 
 // Whether a configured override picked this client's document, which marks the crossing as
 // deliberate for the guards that would otherwise refuse it.
-function overrideApplies(string channel, string? clientVersion) returns boolean|error {
-    return lineOverrideFor(channel, clientVersion) is string;
+function overrideApplies(string product, string channel, string? clientVersion) returns boolean|error {
+    return lineOverrideFor(productScope(product, channel), clientVersion) is string;
 }
 
 // Resolves a client version against one selector table. Returns () when the table is not published,
 // "" when it is published but matches nothing, else the manifest file it names.
-function readSelector(string channel, string fileName, string? clientVersion) returns string?|error {
-    [byte[], string]|error? stored = readSourceManifest(channel, fileName);
+function readSelector(string product, string channel, string fileName, string? clientVersion) returns string?|error {
+    [byte[], string]|error? stored = readSourceManifest(product, channel, fileName);
     if stored is error {
         return stored;
     }
@@ -386,7 +469,7 @@ function readSelector(string channel, string fileName, string? clientVersion) re
 
 // Fails unless the document's detached signature verifies against the configured public key.
 // Skipped, with a warning, when no key is configured — the state local development and tests run in.
-function verifySource(string channel, string fileName, byte[] content) returns error? {
+function verifySource(string product, string channel, string fileName, byte[] content) returns error? {
     if !sourceTrustConfigured {
         // Only reachable with allowUnsignedSource = true; startup refuses otherwise.
         return ();
@@ -395,7 +478,7 @@ function verifySource(string channel, string fileName, byte[] content) returns e
     string pem = check string:fromBytes(pemBytes);
     // The signature travels with the document it covers, so a per-line layout verifies the file it
     // actually selected rather than a fixed name that may describe a different line entirely.
-    [byte[], string]|error? stored = readSourceManifest(channel, fileName + ".sig");
+    [byte[], string]|error? stored = readSourceManifest(product, channel, fileName + ".sig");
     if stored is error {
         return stored;
     }
