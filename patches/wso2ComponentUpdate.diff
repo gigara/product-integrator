@@ -875,7 +875,7 @@ Index: product-integrator/lib/vscode/src/vs/platform/wso2Update/electron-main/ws
 +			return;
 +		}
 +		this.lastProgressEmit = now;
-+		this.setState({
++		this.publishState({
 +			type: Wso2UpdateStateType.Downloading,
 +			progress: {
 +				id: active.id,
