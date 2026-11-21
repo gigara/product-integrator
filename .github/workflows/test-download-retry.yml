@@ -1,0 +1,40 @@
+name: Test download-artifact retry
+on:
+  push:
+    branches: [test/download-artifact-retry]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - shell: bash
+        run: mkdir -p up && echo "hello ${{ matrix.os }}" > up/a.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: t-${{ matrix.os }}
+          path: up/a.txt
+      - name: Present artifact downloads first time
+        uses: ./.github/actions/download-artifact
+        with:
+          name: t-${{ matrix.os }}
+          path: down
+      - shell: bash
+        run: cat down/a.txt && grep -q "hello ${{ matrix.os }}" down/a.txt
+      - name: Missing artifact is tried three times then fails
+        id: missing
+        continue-on-error: true
+        uses: ./.github/actions/download-artifact
+        with:
+          name: does-not-exist
+          path: nowhere
+      - name: Check the missing download failed
+        shell: bash
+        run: |
+          echo "outcome=${{ steps.missing.outcome }}"
+          [ "${{ steps.missing.outcome }}" = "failure" ]
